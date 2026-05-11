@@ -517,7 +517,7 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
     if(!url) return null;
     var m;
     m = url.match(/(?:youtu\\.be\\/|youtube\\.com\\/(?:watch\\?v=|embed\\/|shorts\\/))([\\w-]+)/);
-    if(m) return 'https://www.youtube.com/embed/' + m[1];
+    if(m) return 'https://www.youtube.com/embed/' + m[1] + '?modestbranding=1&rel=0&iv_load_policy=3&playsinline=1&color=white';
     m = url.match(/vimeo\\.com\\/(?:video\\/)?(\\d+)/);
     if(m) return 'https://player.vimeo.com/video/' + m[1];
     return url; // fallback: そのまま埋め込み
