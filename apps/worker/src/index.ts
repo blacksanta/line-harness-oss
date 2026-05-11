@@ -478,13 +478,20 @@ app.get('/lp/:slug', async (c) => {
 <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+<script src="https://www.youtube.com/iframe_api"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;background:#fafafa;color:#1e293b;line-height:1.7}
 .wrap{max-width:780px;margin:0 auto;padding:24px 16px}
 .loading{text-align:center;padding:80px 20px;color:#888}
 .video-wrap{position:relative;padding-bottom:56.25%;height:0;border-radius:12px;overflow:hidden;background:#000;box-shadow:0 4px 24px rgba(0,0,0,0.08)}
-.video-wrap iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0}
+.video-wrap iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0;pointer-events:none}
+.video-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;cursor:pointer;background:transparent;transition:background 0.2s}
+.video-overlay.playing{background:transparent}
+.video-overlay.playing .play-btn{opacity:0;pointer-events:none;transform:scale(0.8)}
+.play-btn{width:80px;height:80px;border-radius:50%;background:rgba(0,0,0,0.55);border:0;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:opacity 0.2s,transform 0.2s;padding:0}
+.play-btn svg{margin-left:4px}
+.video-overlay:hover .play-btn{background:rgba(0,0,0,0.75)}
 .title{font-size:22px;font-weight:700;margin:24px 0 12px;color:#0f172a}
 .body img{max-width:100%;height:auto;border-radius:8px;margin:16px 0}
 .body h1,.body h2,.body h3{margin:24px 0 12px;font-weight:700;color:#0f172a}
@@ -513,22 +520,68 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
 
   function fail(msg){ app.className=''; app.innerHTML = '<div class="loading">'+msg+'</div>'; }
 
+  function youtubeId(url){
+    if(!url) return null;
+    var m = url.match(/(?:youtu\\.be\\/|youtube\\.com\\/(?:watch\\?v=|embed\\/|shorts\\/))([\\w-]+)/);
+    return m ? m[1] : null;
+  }
+
   function videoEmbedUrl(url){
     if(!url) return null;
-    var m;
-    m = url.match(/(?:youtu\\.be\\/|youtube\\.com\\/(?:watch\\?v=|embed\\/|shorts\\/))([\\w-]+)/);
-    if(m) return 'https://www.youtube.com/embed/' + m[1] + '?modestbranding=1&rel=0&iv_load_policy=3&playsinline=1&color=white';
-    m = url.match(/vimeo\\.com\\/(?:video\\/)?(\\d+)/);
+    var ytId = youtubeId(url);
+    if(ytId) return 'https://www.youtube.com/embed/' + ytId + '?enablejsapi=1&controls=0&disablekb=1&fs=0&modestbranding=1&rel=0&iv_load_policy=3&playsinline=1&color=white&origin=' + encodeURIComponent(location.origin);
+    var m = url.match(/vimeo\\.com\\/(?:video\\/)?(\\d+)/);
     if(m) return 'https://player.vimeo.com/video/' + m[1];
     return url; // fallback: そのまま埋め込み
   }
+
+  var ytPlayer = null;
+  function initYouTubePlayer(){
+    if(!window.YT || !window.YT.Player){
+      window.onYouTubeIframeAPIReady = createYouTubePlayer;
+      return;
+    }
+    createYouTubePlayer();
+  }
+  function createYouTubePlayer(){
+    var iframe = document.getElementById('yt-player');
+    var overlay = document.getElementById('video-overlay');
+    if(!iframe || !overlay) return;
+    ytPlayer = new YT.Player('yt-player', {
+      events: {
+        onStateChange: function(e){
+          if(e.data === YT.PlayerState.PLAYING){ overlay.classList.add('playing'); }
+          else { overlay.classList.remove('playing'); }
+        }
+      }
+    });
+    overlay.addEventListener('click', function(){
+      if(!ytPlayer || typeof ytPlayer.getPlayerState !== 'function') return;
+      var state = ytPlayer.getPlayerState();
+      if(state === YT.PlayerState.PLAYING){ ytPlayer.pauseVideo(); }
+      else { ytPlayer.playVideo(); }
+    });
+  }
+
+  var PLAY_ICON = '<svg viewBox="0 0 24 24" width="36" height="36" fill="white" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
 
   function render(payload){
     app.className = '';
     var html = '<h1 class="title">' + payload.name.replace(/[<>&]/g, function(c){return {'<':'&lt;','>':'&gt;','&':'&amp;'}[c];}) + '</h1>';
     if(payload.contentType === 'video' && payload.videoUrl){
       var src = videoEmbedUrl(payload.videoUrl);
-      html += '<div class="video-wrap"><iframe src="'+src+'" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></div>';
+      var isYt = !!youtubeId(payload.videoUrl);
+      if(isYt){
+        html += '<div class="video-wrap">'
+          + '<iframe id="yt-player" src="'+src+'" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>'
+          + '<div class="video-overlay" id="video-overlay"><button type="button" class="play-btn" aria-label="再生">'+PLAY_ICON+'</button></div>'
+          + '</div>';
+      } else {
+        html += '<div class="video-wrap"><iframe src="'+src+'" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></div>';
+      }
+      app.innerHTML = html;
+      if(isYt) initYouTubePlayer();
+      return;
     } else if(payload.contentType === 'page' && payload.body){
       var raw = window.marked ? window.marked.parse(payload.body) : payload.body;
       var clean = window.DOMPurify ? window.DOMPurify.sanitize(raw) : raw;
