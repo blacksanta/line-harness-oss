@@ -25,7 +25,10 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path.match(/^\/api\/forms\/[^/]+\/partial$/) ||
     path.match(/^\/api\/forms\/[^/]+$/) || // GET form definition (public for LIFF)
     path === '/api/meet-callback' || // Meet Harness completion callback
-    path === '/api/qr' // Public QR proxy — used by desktop landing pages
+    path === '/api/qr' || // Public QR proxy — used by desktop landing pages
+    path.startsWith('/lp/') || // LP視聴ページ（LIFFラッパHTML）
+    path.match(/^\/api\/lp-pages\/by-slug\/[^/]+$/) || // LP公開メタAPI
+    path.match(/^\/api\/lp-pages\/[^/]+\/check-access$/) // LP期限判定API
   ) {
     return next();
   }

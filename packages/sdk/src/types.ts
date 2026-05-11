@@ -349,6 +349,77 @@ export interface FormSubmission {
   createdAt: string
 }
 
+// ─── LP Pages（視聴期限付きランディングページ） ─────────────
+export type LpContentType = 'video' | 'page'
+export type LpAccessWindowMode = 'absolute' | 'relative' | 'both' | 'none'
+export type LpAccessReason = 'expired' | 'not_yet' | 'not_friend' | 'inactive'
+
+export interface LpPage {
+  id: string
+  lineAccountId: string | null
+  name: string
+  slug: string
+  contentType: LpContentType
+  videoUrl: string | null
+  body: string | null
+  accessWindowMode: LpAccessWindowMode
+  absoluteStartsAt: string | null
+  absoluteEndsAt: string | null
+  relativeDaysAfterFriendAdd: number | null
+  expiredRedirectUrl: string
+  notFriendRedirectUrl: string | null
+  isActive: boolean
+  viewCount: number
+  createdAt: string
+  updatedAt: string
+  publicUrl?: string  // POST /api/lp-pages のレスポンスのみに含まれる
+}
+
+export interface CreateLpPageInput {
+  name: string
+  slug?: string
+  contentType: LpContentType
+  videoUrl?: string | null
+  body?: string | null
+  accessWindowMode: LpAccessWindowMode
+  absoluteStartsAt?: string | null
+  absoluteEndsAt?: string | null
+  relativeDaysAfterFriendAdd?: number | null
+  expiredRedirectUrl: string
+  notFriendRedirectUrl?: string | null
+  lineAccountId?: string | null
+  isActive?: boolean
+}
+
+export interface UpdateLpPageInput {
+  name?: string
+  slug?: string
+  contentType?: LpContentType
+  videoUrl?: string | null
+  body?: string | null
+  accessWindowMode?: LpAccessWindowMode
+  absoluteStartsAt?: string | null
+  absoluteEndsAt?: string | null
+  relativeDaysAfterFriendAdd?: number | null
+  expiredRedirectUrl?: string
+  notFriendRedirectUrl?: string | null
+  lineAccountId?: string | null
+  isActive?: boolean
+}
+
+export interface LpView {
+  id: string
+  lp_page_id: string
+  friend_id: string | null
+  line_user_id: string | null
+  viewed_at: string
+  user_agent: string | null
+  referrer: string | null
+  access_result: 'allowed' | 'expired' | 'not_yet' | 'not_friend' | 'inactive'
+  reason: string | null
+  friend_name: string | null
+}
+
 // ─── Auto-Replies ──────────────────────────────────────
 export interface AutoReply {
   id: string

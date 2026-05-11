@@ -15,6 +15,7 @@ export { StaffResource } from './resources/staff.js'
 export { ImagesResource } from './resources/images.js'
 export { AutoRepliesResource } from './resources/auto-replies.js'
 export { ConversationsResource } from './resources/conversations.js'
+export { LpPagesResource } from './resources/lp-pages.js'
 
 // All types
 export type {
@@ -74,6 +75,13 @@ export type {
   ConversationMessage,
   ConversationDetail,
   GetConversationParams,
+  LpContentType,
+  LpAccessWindowMode,
+  LpAccessReason,
+  LpPage,
+  CreateLpPageInput,
+  UpdateLpPageInput,
+  LpView,
 } from './types.js'
 
 export type {
