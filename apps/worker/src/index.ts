@@ -46,6 +46,8 @@ import { autoReplies } from './routes/auto-replies.js';
 import { trafficPools } from './routes/traffic-pools.js';
 import { meetCallback } from './routes/meet-callback.js';
 import { messageTemplates } from './routes/message-templates.js';
+import { lpPages } from './routes/lp-pages.js';
+import { getLpPageBySlug, getLineAccountById } from '@line-crm/db';
 
 export type Env = {
   Bindings: {
@@ -119,6 +121,7 @@ app.route('/', trafficPools);
 app.route('/', accountSettings);
 app.route('/', meetCallback);
 app.route('/', messageTemplates);
+app.route('/', lpPages);
 
 // Self-hosted QR code proxy — prevents leaking ref tokens to third-party services
 app.get('/api/qr', async (c) => {
@@ -432,6 +435,144 @@ ${longPressBlock}
 </script>
 </body>
 </html>`);
+});
+
+// 視聴期限付きLP（UTAGE風）— LIFFラッパHTMLを返す。コンテンツ本体は中で /api/lp-pages/:id/check-access から取りに行く。
+app.get('/lp/:slug', async (c) => {
+  const slug = c.req.param('slug');
+  const lp = await getLpPageBySlug(c.env.DB, slug);
+
+  const escape = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+  if (!lp || !lp.is_active) {
+    return c.html(
+      `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>ページが見つかりません</title></head>
+<body style="font-family:system-ui;text-align:center;padding:60px 20px;color:#666">
+<h1 style="font-size:18px;font-weight:600;color:#333">ページが見つかりません</h1>
+<p style="font-size:14px;margin-top:16px">URLが正しいか、もう一度ご確認ください。</p>
+</body></html>`,
+      404,
+      { 'Cache-Control': 'no-store' },
+    );
+  }
+
+  // line_account_id から LIFF ID を解決。未設定なら env.LIFF_URL から ID を抽出。
+  let liffId = '';
+  if (lp.line_account_id) {
+    const account = await getLineAccountById(c.env.DB, lp.line_account_id);
+    if (account?.liff_id) liffId = account.liff_id;
+  }
+  if (!liffId) {
+    const m = (c.env.LIFF_URL || '').match(/liff\.line\.me\/([0-9]+-[A-Za-z0-9]+)/);
+    if (m) liffId = m[1];
+  }
+
+  return c.html(
+    `<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escape(lp.name)}</title>
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;background:#fafafa;color:#1e293b;line-height:1.7}
+.wrap{max-width:780px;margin:0 auto;padding:24px 16px}
+.loading{text-align:center;padding:80px 20px;color:#888}
+.video-wrap{position:relative;padding-bottom:56.25%;height:0;border-radius:12px;overflow:hidden;background:#000;box-shadow:0 4px 24px rgba(0,0,0,0.08)}
+.video-wrap iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0}
+.title{font-size:22px;font-weight:700;margin:24px 0 12px;color:#0f172a}
+.body img{max-width:100%;height:auto;border-radius:8px;margin:16px 0}
+.body h1,.body h2,.body h3{margin:24px 0 12px;font-weight:700;color:#0f172a}
+.body h1{font-size:24px}.body h2{font-size:20px}.body h3{font-size:17px}
+.body p{margin:12px 0}
+.body a{color:#06C755;text-decoration:underline}
+.body ul,.body ol{margin:12px 0 12px 24px}
+.body blockquote{border-left:4px solid #06C755;padding:8px 16px;background:#f0fdf4;margin:16px 0;color:#475569}
+.body code{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-family:ui-monospace,monospace;font-size:13px}
+.body pre{background:#f1f5f9;padding:12px;border-radius:8px;overflow-x:auto;margin:16px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div id="app" class="loading">読み込み中…</div>
+</div>
+<script>
+window.__LP_SLUG__ = ${JSON.stringify(slug)};
+window.__LIFF_ID__ = ${JSON.stringify(liffId)};
+</script>
+<script>
+(function(){
+  var SLUG = window.__LP_SLUG__;
+  var LIFF_ID = window.__LIFF_ID__;
+  var app = document.getElementById('app');
+
+  function fail(msg){ app.className=''; app.innerHTML = '<div class="loading">'+msg+'</div>'; }
+
+  function videoEmbedUrl(url){
+    if(!url) return null;
+    var m;
+    m = url.match(/(?:youtu\\.be\\/|youtube\\.com\\/(?:watch\\?v=|embed\\/|shorts\\/))([\\w-]+)/);
+    if(m) return 'https://www.youtube.com/embed/' + m[1];
+    m = url.match(/vimeo\\.com\\/(?:video\\/)?(\\d+)/);
+    if(m) return 'https://player.vimeo.com/video/' + m[1];
+    return url; // fallback: そのまま埋め込み
+  }
+
+  function render(payload){
+    app.className = '';
+    var html = '<h1 class="title">' + payload.name.replace(/[<>&]/g, function(c){return {'<':'&lt;','>':'&gt;','&':'&amp;'}[c];}) + '</h1>';
+    if(payload.contentType === 'video' && payload.videoUrl){
+      var src = videoEmbedUrl(payload.videoUrl);
+      html += '<div class="video-wrap"><iframe src="'+src+'" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></div>';
+    } else if(payload.contentType === 'page' && payload.body){
+      var raw = window.marked ? window.marked.parse(payload.body) : payload.body;
+      var clean = window.DOMPurify ? window.DOMPurify.sanitize(raw) : raw;
+      html += '<div class="body">' + clean + '</div>';
+    }
+    app.innerHTML = html;
+  }
+
+  async function main(){
+    if(!LIFF_ID){ fail('LIFF IDが設定されていません'); return; }
+    try {
+      await liff.init({ liffId: LIFF_ID });
+      if(!liff.isLoggedIn()){ liff.login({ redirectUri: location.href }); return; }
+      var profile = await liff.getProfile();
+
+      var ck = await fetch('/api/lp-pages/by-slug/' + encodeURIComponent(SLUG)).then(function(r){return r.json();});
+      if(!ck.success){ fail('ページが見つかりません'); return; }
+      var lpId = ck.data.id;
+
+      var res = await fetch('/api/lp-pages/' + lpId + '/check-access', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineUserId: profile.userId }),
+      }).then(function(r){return r.json();});
+
+      if(!res.success){ fail('エラーが発生しました'); return; }
+      if(!res.data.allowed){
+        location.replace(res.data.redirectUrl);
+        return;
+      }
+      render(res.data.payload);
+    } catch(e){
+      console.error(e);
+      fail('読み込みに失敗しました');
+    }
+  }
+  main();
+})();
+</script>
+</body>
+</html>`,
+    200,
+    { 'Cache-Control': 'no-store' },
+  );
 });
 
 // Convenience redirect for /book path

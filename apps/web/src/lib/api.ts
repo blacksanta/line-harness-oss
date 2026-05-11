@@ -554,4 +554,50 @@ export const api = {
     regenerateKey: (id: string) =>
       fetchApi<ApiResponse<{ apiKey: string }>>(`/api/staff/${id}/regenerate-key`, { method: 'POST' }),
   },
+  lpPages: {
+    list: () => fetchApi<ApiResponse<LpPage[]>>('/api/lp-pages'),
+    get: (id: string) => fetchApi<ApiResponse<LpPage>>(`/api/lp-pages/${id}`),
+    update: (id: string, data: Partial<LpPage>) =>
+      fetchApi<ApiResponse<LpPage>>(`/api/lp-pages/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    delete: (id: string) =>
+      fetchApi<ApiResponse<null>>(`/api/lp-pages/${id}`, { method: 'DELETE' }),
+    getViews: (id: string) =>
+      fetchApi<ApiResponse<LpView[]>>(`/api/lp-pages/${id}/views`),
+  },
+}
+
+export interface LpPage {
+  id: string
+  lineAccountId: string | null
+  name: string
+  slug: string
+  contentType: 'video' | 'page'
+  videoUrl: string | null
+  body: string | null
+  accessWindowMode: 'absolute' | 'relative' | 'both' | 'none'
+  absoluteStartsAt: string | null
+  absoluteEndsAt: string | null
+  relativeDaysAfterFriendAdd: number | null
+  expiredRedirectUrl: string
+  notFriendRedirectUrl: string | null
+  isActive: boolean
+  viewCount: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface LpView {
+  id: string
+  lp_page_id: string
+  friend_id: string | null
+  friend_name: string | null
+  line_user_id: string | null
+  viewed_at: string
+  user_agent: string | null
+  referrer: string | null
+  access_result: 'allowed' | 'expired' | 'not_yet' | 'not_friend' | 'inactive'
+  reason: string | null
 }

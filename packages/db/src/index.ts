@@ -25,6 +25,7 @@ export * from './staff';
 export * from './auto-replies';
 export * from './traffic-pools';
 export * from './message-templates';
+export * from './lp-pages';
 
 /**
  * Thin wrapper around D1Database.
