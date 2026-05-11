@@ -28,6 +28,8 @@ import { registerManageTrafficPools } from "./manage-traffic-pools.js";
 import { registerManageMessageTemplates } from "./manage-message-templates.js";
 import { registerListConversations } from "./list-conversations.js";
 import { registerGetConversation } from "./get-conversation.js";
+import { registerCreateLpPage } from "./create-lp-page.js";
+import { registerManageLpPages } from "./manage-lp-pages.js";
 
 export function registerAllTools(server: McpServer): void {
   registerSendMessage(server);
@@ -59,4 +61,6 @@ export function registerAllTools(server: McpServer): void {
   registerManageMessageTemplates(server);
   registerListConversations(server);
   registerGetConversation(server);
+  registerCreateLpPage(server);
+  registerManageLpPages(server);
 }

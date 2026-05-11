@@ -14,3 +14,10 @@ dist/
 apps/web/out/
 apps/worker/dist/
 .worktrees/
+
+# Local secrets and personal config
+.dev.vars
+.line-harness-setup.json
+.line-harness-config.json
+.claude/
+*.tsbuildinfo
