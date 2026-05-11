@@ -30,11 +30,14 @@ jobs:
 
       - run: pnpm --filter worker build
         env:
+          CLOUDFLARE_ENV: production
           VITE_LIFF_ID: ${{ vars.VITE_LIFF_ID }}
           VITE_BOT_BASIC_ID: ${{ vars.VITE_BOT_BASIC_ID }}
           VITE_CALENDAR_CONNECTION_ID: ${{ vars.VITE_CALENDAR_CONNECTION_ID }}
 
       - uses: cloudflare/wrangler-action@v3
+        env:
+          CLOUDFLARE_ENV: production
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
