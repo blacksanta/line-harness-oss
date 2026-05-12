@@ -5,7 +5,7 @@ name: Deploy Pages
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, staging]
     paths:
       - 'apps/web/**'
       - 'packages/shared/**'
@@ -35,4 +35,4 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy apps/web/out --project-name=line-harness-admin-134f68c9 --branch=main
+          command: pages deploy apps/web/out --project-name=line-harness-admin-134f68c9 --branch=${{ github.ref_name }}
