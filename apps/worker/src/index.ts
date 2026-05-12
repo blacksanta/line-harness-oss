@@ -486,12 +486,11 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 .loading{text-align:center;padding:80px 20px;color:#888}
 .video-wrap{position:relative;padding-bottom:56.25%;height:0;border-radius:12px;overflow:hidden;background:#000;box-shadow:0 4px 24px rgba(0,0,0,0.08)}
 .video-wrap iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0;pointer-events:none}
-.video-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;cursor:pointer;background:transparent;transition:background 0.2s}
-.video-overlay.playing{background:transparent}
-.video-overlay.playing .play-btn{opacity:0;pointer-events:none;transform:scale(0.8)}
-.play-btn{width:80px;height:80px;border-radius:50%;background:rgba(0,0,0,0.55);border:0;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:opacity 0.2s,transform 0.2s;padding:0}
-.play-btn svg{margin-left:4px}
-.video-overlay:hover .play-btn{background:rgba(0,0,0,0.75)}
+.video-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;cursor:pointer;background-color:#000;background-size:cover;background-position:center;transition:opacity 0.3s}
+.video-overlay.playing{opacity:0;pointer-events:none}
+.play-btn{width:84px;height:84px;border-radius:50%;background:rgba(0,0,0,0.6);border:2px solid rgba(255,255,255,0.95);display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;box-shadow:0 4px 20px rgba(0,0,0,0.4)}
+.play-btn svg{margin-left:6px}
+.video-overlay:hover .play-btn{background:rgba(0,0,0,0.8)}
 .title{font-size:22px;font-weight:700;margin:24px 0 12px;color:#0f172a}
 .body img{max-width:100%;height:auto;border-radius:8px;margin:16px 0}
 .body h1,.body h2,.body h3{margin:24px 0 12px;font-weight:700;color:#0f172a}
@@ -572,9 +571,11 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
       var src = videoEmbedUrl(payload.videoUrl);
       var isYt = !!youtubeId(payload.videoUrl);
       if(isYt){
+        var ytId = youtubeId(payload.videoUrl);
+        var thumb = 'https://img.youtube.com/vi/'+ytId+'/maxresdefault.jpg';
         html += '<div class="video-wrap">'
           + '<iframe id="yt-player" src="'+src+'" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>'
-          + '<div class="video-overlay" id="video-overlay"><button type="button" class="play-btn" aria-label="再生">'+PLAY_ICON+'</button></div>'
+          + '<div class="video-overlay" id="video-overlay" style="background-image:url(\\''+thumb+'\\')"><button type="button" class="play-btn" aria-label="再生">'+PLAY_ICON+'</button></div>'
           + '</div>';
       } else {
         html += '<div class="video-wrap"><iframe src="'+src+'" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></div>';
