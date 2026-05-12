@@ -4,7 +4,7 @@ name: Deploy Worker
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, staging]
     paths:
       - 'apps/worker/**'
       - 'packages/db/**'
@@ -15,6 +15,8 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      DEPLOY_ENV: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -30,16 +32,16 @@ jobs:
 
       - run: pnpm --filter worker build
         env:
-          CLOUDFLARE_ENV: production
+          CLOUDFLARE_ENV: ${{ env.DEPLOY_ENV }}
           VITE_LIFF_ID: ${{ vars.VITE_LIFF_ID }}
           VITE_BOT_BASIC_ID: ${{ vars.VITE_BOT_BASIC_ID }}
           VITE_CALENDAR_CONNECTION_ID: ${{ vars.VITE_CALENDAR_CONNECTION_ID }}
 
       - uses: cloudflare/wrangler-action@v3
         env:
-          CLOUDFLARE_ENV: production
+          CLOUDFLARE_ENV: ${{ env.DEPLOY_ENV }}
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: apps/worker
-          command: deploy --env production
+          command: deploy --env ${{ env.DEPLOY_ENV }}

@@ -48,3 +48,28 @@ bucket_name = "line-harness-images"
 
 [env.production.triggers]
 crons = ["*/5 * * * *"]
+
+# ═══════════════════════════════════════════════════════════════
+# Staging 環境（本番と同一 account、リソースは別）
+# 使い方: npx wrangler deploy --env staging
+# D1:     npx wrangler d1 execute line-crm-staging --env staging --remote --file ...
+# ═══════════════════════════════════════════════════════════════
+[env.staging]
+name = "line-harness-staging"
+account_id = "fe67ee32ff09d65511ba69bfd049bef5"
+
+[env.staging.assets]
+directory = "dist/client"
+binding = "ASSETS"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "line-crm-staging"
+database_id = "9841d8a6-81d8-41c2-b43b-828b9e19532d"
+
+[[env.staging.r2_buckets]]
+binding = "IMAGES"
+bucket_name = "line-harness-images-staging"
+
+[env.staging.triggers]
+crons = ["*/5 * * * *"]
