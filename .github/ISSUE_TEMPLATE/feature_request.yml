@@ -1,0 +1,44 @@
+name: 機能追加要望
+description: 新機能や既存機能の拡張を提案する
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景・課題
+      description: なぜこの機能が必要か、現状の何が問題かを記載してください。
+      placeholder: 現状〜のため、〜が困っている。〜を実現したい。
+    validations:
+      required: true
+  - type: textarea
+    id: requirements
+    attributes:
+      label: 要件
+      description: 機能要件を箇条書きで記載してください。
+      placeholder: |
+        - 〜できること
+        - 〜が表示されること
+    validations:
+      required: true
+  - type: textarea
+    id: design
+    attributes:
+      label: 実装方針（任意）
+      description: 影響を受けるファイル・関数、技術選択、UIモックなど。
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 受け入れ条件
+      description: 完了の定義をチェックリスト形式で記載してください。
+      value: |
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: 備考・参考リンク
+      description: 関連issue・PR・ドキュメント・スクリーンショットなど。
