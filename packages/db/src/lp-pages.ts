@@ -87,6 +87,31 @@ export function isLpAccessible(
   return { allowed: true };
 }
 
+// ── 期限ミリ秒の集約算出（カウントダウン用） ────────────────────────────────
+export function computeLpExpiryMs(
+  lp: LpPage,
+  friend: { created_at: string } | null,
+): number | null {
+  if (lp.access_window_mode === 'none') return null;
+
+  let absMs: number | null = null;
+  let relMs: number | null = null;
+
+  if (lp.access_window_mode === 'absolute' || lp.access_window_mode === 'both') {
+    if (lp.absolute_ends_at) absMs = new Date(lp.absolute_ends_at).getTime();
+  }
+  if (lp.access_window_mode === 'relative' || lp.access_window_mode === 'both') {
+    if (friend && lp.relative_days_after_friend_add != null) {
+      relMs =
+        new Date(friend.created_at).getTime() +
+        lp.relative_days_after_friend_add * 86_400_000;
+    }
+  }
+
+  if (absMs !== null && relMs !== null) return Math.min(absMs, relMs);
+  return absMs ?? relMs;
+}
+
 // ── CRUD ────────────────────────────────────────────────────────────────────
 
 export async function getLpPages(db: D1Database): Promise<LpPage[]> {

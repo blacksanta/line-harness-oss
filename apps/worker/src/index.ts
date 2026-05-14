@@ -501,6 +501,17 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 .body blockquote{border-left:4px solid #06C755;padding:8px 16px;background:#f0fdf4;margin:16px 0;color:#475569}
 .body code{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-family:ui-monospace,monospace;font-size:13px}
 .body pre{background:#f1f5f9;padding:12px;border-radius:8px;overflow-x:auto;margin:16px 0}
+.countdown{margin:24px 0 8px;text-align:center}
+.countdown-title{font-size:1.25rem;font-weight:700;margin-bottom:12px;color:#0f172a}
+.countdown-grid{display:flex;gap:14px;justify-content:center;flex-wrap:nowrap}
+.countdown-cell{display:flex;flex-direction:column;align-items:center}
+.countdown-num{background:#E85C3A;color:#fff;border-radius:8px;padding:14px 20px;font-size:1.75rem;font-weight:700;box-shadow:0 2px 4px rgba(0,0,0,.15);min-width:64px;text-align:center;font-variant-numeric:tabular-nums}
+.countdown-label{font-size:.78rem;color:#64748b;margin-top:6px}
+@media(max-width:480px){
+.countdown-num{font-size:1.35rem;padding:10px 12px;min-width:46px}
+.countdown-title{font-size:1.05rem}
+.countdown-grid{gap:8px}
+}
 </style>
 </head>
 <body>
@@ -580,6 +591,15 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
       } else {
         html += '<div class="video-wrap"><iframe src="'+src+'" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></div>';
       }
+      html += '<div id="countdown" class="countdown" style="display:none" aria-live="off">'
+        +   '<p class="countdown-title">動画公開の終了まであと…</p>'
+        +   '<div class="countdown-grid">'
+        +     '<div class="countdown-cell" data-unit="days"><div class="countdown-num">0</div><div class="countdown-label">日</div></div>'
+        +     '<div class="countdown-cell" data-unit="hours"><div class="countdown-num">00</div><div class="countdown-label">時間</div></div>'
+        +     '<div class="countdown-cell" data-unit="minutes"><div class="countdown-num">00</div><div class="countdown-label">分</div></div>'
+        +     '<div class="countdown-cell" data-unit="seconds"><div class="countdown-num">00</div><div class="countdown-label">秒</div></div>'
+        +   '</div>'
+        + '</div>';
       app.innerHTML = html;
       if(isYt) initYouTubePlayer();
       return;
@@ -589,6 +609,61 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
       html += '<div class="body">' + clean + '</div>';
     }
     app.innerHTML = html;
+  }
+
+  function startCountdown(expiresAtMs, serverNowMs, redirectUrl){
+    if(expiresAtMs == null || !redirectUrl) return;
+    var container = document.getElementById('countdown');
+    if(!container) return;
+
+    var offset = Date.now() - (serverNowMs || Date.now());
+    var dCell = container.querySelector('[data-unit="days"]');
+    var dNum  = dCell.querySelector('.countdown-num');
+    var hNum  = container.querySelector('[data-unit="hours"] .countdown-num');
+    var mNum  = container.querySelector('[data-unit="minutes"] .countdown-num');
+    var sNum  = container.querySelector('[data-unit="seconds"] .countdown-num');
+
+    function pad(n){ return n < 10 ? '0' + n : String(n); }
+
+    var timerId = null;
+    var fired = false;
+
+    function tick(){
+      var remaining = expiresAtMs - (Date.now() - offset);
+      if(remaining <= 0){
+        dNum.textContent = '0';
+        hNum.textContent = '00';
+        mNum.textContent = '00';
+        sNum.textContent = '00';
+        if(!fired){
+          fired = true;
+          if(timerId) clearInterval(timerId);
+          location.replace(redirectUrl);
+        }
+        return;
+      }
+      var totalSec = Math.floor(remaining / 1000);
+      var days    = Math.floor(totalSec / 86400);
+      var hours   = Math.floor((totalSec % 86400) / 3600);
+      var minutes = Math.floor((totalSec % 3600) / 60);
+      var seconds = totalSec % 60;
+      if(days >= 1){
+        dCell.style.display = '';
+        dNum.textContent = String(days);
+      } else {
+        dCell.style.display = 'none';
+      }
+      hNum.textContent = pad(hours);
+      mNum.textContent = pad(minutes);
+      sNum.textContent = pad(seconds);
+    }
+
+    container.style.display = '';
+    tick();
+    timerId = setInterval(tick, 1000);
+    document.addEventListener('visibilitychange', function(){
+      if(!document.hidden) tick();
+    });
   }
 
   async function main(){
@@ -614,6 +689,7 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
         return;
       }
       render(res.data.payload);
+      startCountdown(res.data.expiresAtMs, res.data.serverNowMs, res.data.expiredRedirectUrl);
     } catch(e){
       console.error(e);
       fail('読み込みに失敗しました');

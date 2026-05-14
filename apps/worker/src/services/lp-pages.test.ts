@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isLpAccessible, type LpPage } from '@line-crm/db';
+import { isLpAccessible, computeLpExpiryMs, type LpPage } from '@line-crm/db';
 
 const baseLp: LpPage = {
   id: 'lp_1',
@@ -129,5 +129,100 @@ describe('isLpAccessible', () => {
       expect(r.allowed).toBe(false);
       if (!r.allowed) expect(r.reason).toBe('not_yet');
     });
+  });
+});
+
+describe('computeLpExpiryMs', () => {
+  it('none モードは null', () => {
+    expect(computeLpExpiryMs(baseLp, friend)).toBeNull();
+  });
+
+  it('absolute モード: end の epoch ms を返す', () => {
+    const lp: LpPage = {
+      ...baseLp,
+      access_window_mode: 'absolute',
+      absolute_ends_at: '2026-05-20T23:59:59.000+09:00',
+    };
+    expect(computeLpExpiryMs(lp, friend)).toBe(
+      new Date('2026-05-20T23:59:59.000+09:00').getTime(),
+    );
+  });
+
+  it('absolute モードで end が null なら null', () => {
+    const lp: LpPage = { ...baseLp, access_window_mode: 'absolute' };
+    expect(computeLpExpiryMs(lp, friend)).toBeNull();
+  });
+
+  it('relative モード: friend.created_at + N日', () => {
+    const lp: LpPage = {
+      ...baseLp,
+      access_window_mode: 'relative',
+      relative_days_after_friend_add: 7,
+    };
+    const f = { created_at: '2026-05-01T00:00:00.000+09:00' };
+    expect(computeLpExpiryMs(lp, f)).toBe(
+      new Date('2026-05-08T00:00:00.000+09:00').getTime(),
+    );
+  });
+
+  it('relative モード: friend が null なら null', () => {
+    const lp: LpPage = {
+      ...baseLp,
+      access_window_mode: 'relative',
+      relative_days_after_friend_add: 7,
+    };
+    expect(computeLpExpiryMs(lp, null)).toBeNull();
+  });
+
+  it('relative モード: 日数が null なら null', () => {
+    const lp: LpPage = {
+      ...baseLp,
+      access_window_mode: 'relative',
+      relative_days_after_friend_add: null,
+    };
+    expect(computeLpExpiryMs(lp, friend)).toBeNull();
+  });
+
+  it('both モード: 早い方（absolute）を返す', () => {
+    const lp: LpPage = {
+      ...baseLp,
+      access_window_mode: 'both',
+      absolute_ends_at: '2026-05-05T00:00:00.000+09:00',
+      relative_days_after_friend_add: 30,
+    };
+    const f = { created_at: '2026-05-01T00:00:00.000+09:00' };
+    expect(computeLpExpiryMs(lp, f)).toBe(
+      new Date('2026-05-05T00:00:00.000+09:00').getTime(),
+    );
+  });
+
+  it('both モード: 早い方（relative）を返す', () => {
+    const lp: LpPage = {
+      ...baseLp,
+      access_window_mode: 'both',
+      absolute_ends_at: '2026-06-01T00:00:00.000+09:00',
+      relative_days_after_friend_add: 3,
+    };
+    const f = { created_at: '2026-05-01T00:00:00.000+09:00' };
+    expect(computeLpExpiryMs(lp, f)).toBe(
+      new Date('2026-05-04T00:00:00.000+09:00').getTime(),
+    );
+  });
+
+  it('both モード: 片方しか設定が無ければ設定された方を返す', () => {
+    const lp: LpPage = {
+      ...baseLp,
+      access_window_mode: 'both',
+      absolute_ends_at: '2026-05-05T00:00:00.000+09:00',
+      relative_days_after_friend_add: null,
+    };
+    expect(computeLpExpiryMs(lp, friend)).toBe(
+      new Date('2026-05-05T00:00:00.000+09:00').getTime(),
+    );
+  });
+
+  it('both モード: 両方未設定なら null', () => {
+    const lp: LpPage = { ...baseLp, access_window_mode: 'both' };
+    expect(computeLpExpiryMs(lp, friend)).toBeNull();
   });
 });

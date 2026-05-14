@@ -9,6 +9,7 @@ import {
   createLpView,
   getLpViews,
   isLpAccessible,
+  computeLpExpiryMs,
   getFriendByLineUserId,
   type LpPage,
 } from '@line-crm/db';
@@ -252,6 +253,12 @@ lpPages.post('/api/lp-pages/:id/check-access', async (c) => {
           body: lp.body,
           name: lp.name,
         },
+        expiresAtMs: computeLpExpiryMs(
+          lp,
+          friend ? { created_at: friend.created_at } : null,
+        ),
+        serverNowMs: Date.now(),
+        expiredRedirectUrl: lp.expired_redirect_url,
       },
     });
   } catch (err) {
