@@ -33,7 +33,7 @@ jobs:
       - run: pnpm --filter worker build
         env:
           CLOUDFLARE_ENV: ${{ env.DEPLOY_ENV }}
-          VITE_LIFF_ID: ${{ vars.VITE_LIFF_ID }}
+          VITE_LIFF_ID: ${{ env.DEPLOY_ENV == 'staging' && vars.VITE_LIFF_ID_STAGING || vars.VITE_LIFF_ID }}
           VITE_BOT_BASIC_ID: ${{ vars.VITE_BOT_BASIC_ID }}
           VITE_CALENDAR_CONNECTION_ID: ${{ vars.VITE_CALENDAR_CONNECTION_ID }}
 
