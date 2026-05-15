@@ -8,7 +8,6 @@ CREATE TABLE IF NOT EXISTS lp_pages (
   name                            TEXT NOT NULL,
   slug                            TEXT NOT NULL UNIQUE,
 
-  content_type                    TEXT NOT NULL CHECK (content_type IN ('video', 'page')),
   video_url                       TEXT,
   body                            TEXT,
 

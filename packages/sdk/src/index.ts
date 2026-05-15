@@ -75,7 +75,6 @@ export type {
   ConversationMessage,
   ConversationDetail,
   GetConversationParams,
-  LpContentType,
   LpAccessWindowMode,
   LpAccessReason,
   LpPage,

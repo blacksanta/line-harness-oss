@@ -575,12 +575,14 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
 
   var PLAY_ICON = '<svg viewBox="0 0 24 24" width="36" height="36" fill="white" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
 
-  function render(payload){
+  function render(payload, hasExpiry){
     app.className = '';
     var html = '<h1 class="title">' + payload.name.replace(/[<>&]/g, function(c){return {'<':'&lt;','>':'&gt;','&':'&amp;'}[c];}) + '</h1>';
-    if(payload.contentType === 'video' && payload.videoUrl){
+    var hasVideo = !!payload.videoUrl;
+    var isYt = false;
+    if(hasVideo){
       var src = videoEmbedUrl(payload.videoUrl);
-      var isYt = !!youtubeId(payload.videoUrl);
+      isYt = !!youtubeId(payload.videoUrl);
       if(isYt){
         var ytId = youtubeId(payload.videoUrl);
         var thumb = 'https://img.youtube.com/vi/'+ytId+'/maxresdefault.jpg';
@@ -591,8 +593,15 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
       } else {
         html += '<div class="video-wrap"><iframe src="'+src+'" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></div>';
       }
+    }
+    if(payload.body){
+      var raw = window.marked ? window.marked.parse(payload.body) : payload.body;
+      var clean = window.DOMPurify ? window.DOMPurify.sanitize(raw) : raw;
+      html += '<div class="body">' + clean + '</div>';
+    }
+    if(hasExpiry){
       html += '<div id="countdown" class="countdown" style="display:none" aria-live="off">'
-        +   '<p class="countdown-title">動画公開の終了まであと…</p>'
+        +   '<p class="countdown-title">公開終了まであと…</p>'
         +   '<div class="countdown-grid">'
         +     '<div class="countdown-cell" data-unit="days"><div class="countdown-num">0</div><div class="countdown-label">日</div></div>'
         +     '<div class="countdown-cell" data-unit="hours"><div class="countdown-num">00</div><div class="countdown-label">時間</div></div>'
@@ -600,15 +609,9 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
         +     '<div class="countdown-cell" data-unit="seconds"><div class="countdown-num">00</div><div class="countdown-label">秒</div></div>'
         +   '</div>'
         + '</div>';
-      app.innerHTML = html;
-      if(isYt) initYouTubePlayer();
-      return;
-    } else if(payload.contentType === 'page' && payload.body){
-      var raw = window.marked ? window.marked.parse(payload.body) : payload.body;
-      var clean = window.DOMPurify ? window.DOMPurify.sanitize(raw) : raw;
-      html += '<div class="body">' + clean + '</div>';
     }
     app.innerHTML = html;
+    if(hasVideo && isYt) initYouTubePlayer();
   }
 
   function startCountdown(expiresAtMs, serverNowMs, redirectUrl){
@@ -688,7 +691,7 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
         location.replace(res.data.redirectUrl);
         return;
       }
-      render(res.data.payload);
+      render(res.data.payload, res.data.expiresAtMs != null);
       startCountdown(res.data.expiresAtMs, res.data.serverNowMs, res.data.expiredRedirectUrl);
     } catch(e){
       console.error(e);

@@ -13,9 +13,8 @@ export function registerManageLpPages(server: McpServer): void {
       lpPageId: z.string().optional().describe("LP ID（list以外で必須）"),
       name: z.string().optional(),
       slug: z.string().optional(),
-      contentType: z.enum(["video", "page"]).optional(),
-      videoUrl: z.string().nullable().optional(),
-      body: z.string().nullable().optional(),
+      videoUrl: z.string().nullable().optional().describe("動画URL。null/空でクリア。videoUrl と body の両方が空になる更新は拒否される"),
+      body: z.string().nullable().optional().describe("Markdown本文。null/空でクリア。videoUrl と body の両方が空になる更新は拒否される"),
       accessWindowMode: z.enum(["absolute", "relative", "both", "none"]).optional(),
       absoluteStartsAt: z.string().nullable().optional(),
       absoluteEndsAt: z.string().nullable().optional(),
@@ -30,7 +29,6 @@ export function registerManageLpPages(server: McpServer): void {
       lpPageId,
       name,
       slug,
-      contentType,
       videoUrl,
       body,
       accessWindowMode,
@@ -76,7 +74,6 @@ export function registerManageLpPages(server: McpServer): void {
           const updates: Record<string, unknown> = {};
           if (name !== undefined) updates.name = name;
           if (slug !== undefined) updates.slug = slug;
-          if (contentType !== undefined) updates.contentType = contentType;
           if (videoUrl !== undefined) updates.videoUrl = videoUrl;
           if (body !== undefined) updates.body = body;
           if (accessWindowMode !== undefined) updates.accessWindowMode = accessWindowMode;

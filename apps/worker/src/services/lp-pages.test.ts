@@ -6,7 +6,6 @@ const baseLp: LpPage = {
   line_account_id: null,
   name: 'テスト',
   slug: 'test',
-  content_type: 'video',
   video_url: 'https://www.youtube.com/watch?v=xxx',
   body: null,
   access_window_mode: 'none',
