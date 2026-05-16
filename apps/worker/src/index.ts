@@ -478,19 +478,16 @@ app.get('/lp/:slug', async (c) => {
 <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
-<script src="https://www.youtube.com/iframe_api"></script>
+<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
+<script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;background:#fafafa;color:#1e293b;line-height:1.7}
 .wrap{max-width:780px;margin:0 auto;padding:24px 16px}
 .loading{text-align:center;padding:80px 20px;color:#888}
 .video-wrap{position:relative;padding-bottom:56.25%;height:0;border-radius:12px;overflow:hidden;background:#000;box-shadow:0 4px 24px rgba(0,0,0,0.08)}
-.video-wrap iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0;pointer-events:none}
-.video-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;cursor:pointer;background-color:#000;background-size:cover;background-position:center;transition:opacity 0.3s}
-.video-overlay.playing{opacity:0;pointer-events:none}
-.play-btn{width:84px;height:84px;border-radius:50%;background:rgba(0,0,0,0.6);border:2px solid rgba(255,255,255,0.95);display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;box-shadow:0 4px 20px rgba(0,0,0,0.4)}
-.play-btn svg{margin-left:6px}
-.video-overlay:hover .play-btn{background:rgba(0,0,0,0.8)}
+.video-wrap iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0}
+.video-wrap .plyr{position:absolute;inset:0;width:100%;height:100%;border-radius:12px}
 .title{font-size:22px;font-weight:700;margin:24px 0 12px;color:#0f172a}
 .body img{max-width:100%;height:auto;border-radius:8px;margin:16px 0}
 .body h1,.body h2,.body h3{margin:24px 0 12px;font-weight:700;color:#0f172a}
@@ -536,59 +533,33 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
     return m ? m[1] : null;
   }
 
-  function videoEmbedUrl(url){
+  function vimeoId(url){
     if(!url) return null;
-    var ytId = youtubeId(url);
-    if(ytId) return 'https://www.youtube.com/embed/' + ytId + '?enablejsapi=1&controls=0&disablekb=1&fs=0&modestbranding=1&rel=0&iv_load_policy=3&playsinline=1&color=white&origin=' + encodeURIComponent(location.origin);
     var m = url.match(/vimeo\\.com\\/(?:video\\/)?(\\d+)/);
-    if(m) return 'https://player.vimeo.com/video/' + m[1];
+    return m ? m[1] : null;
+  }
+
+  function videoEmbedUrl(url, ytId, vmId){
+    if(!url) return null;
+    if(ytId) return 'https://www.youtube.com/embed/' + ytId + '?playsinline=1';
+    if(vmId) return 'https://player.vimeo.com/video/' + vmId;
     return url; // fallback: そのまま埋め込み
   }
-
-  var ytPlayer = null;
-  function initYouTubePlayer(){
-    if(!window.YT || !window.YT.Player){
-      window.onYouTubeIframeAPIReady = createYouTubePlayer;
-      return;
-    }
-    createYouTubePlayer();
-  }
-  function createYouTubePlayer(){
-    var iframe = document.getElementById('yt-player');
-    var overlay = document.getElementById('video-overlay');
-    if(!iframe || !overlay) return;
-    ytPlayer = new YT.Player('yt-player', {
-      events: {
-        onStateChange: function(e){
-          if(e.data === YT.PlayerState.PLAYING){ overlay.classList.add('playing'); }
-          else { overlay.classList.remove('playing'); }
-        }
-      }
-    });
-    overlay.addEventListener('click', function(){
-      if(!ytPlayer || typeof ytPlayer.getPlayerState !== 'function') return;
-      var state = ytPlayer.getPlayerState();
-      if(state === YT.PlayerState.PLAYING){ ytPlayer.pauseVideo(); }
-      else { ytPlayer.playVideo(); }
-    });
-  }
-
-  var PLAY_ICON = '<svg viewBox="0 0 24 24" width="36" height="36" fill="white" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
 
   function render(payload, hasExpiry){
     app.className = '';
     var html = '<h1 class="title">' + payload.name.replace(/[<>&]/g, function(c){return {'<':'&lt;','>':'&gt;','&':'&amp;'}[c];}) + '</h1>';
     var hasVideo = !!payload.videoUrl;
-    var isYt = false;
+    var ytId = hasVideo ? youtubeId(payload.videoUrl) : null;
+    var vmId = hasVideo && !ytId ? vimeoId(payload.videoUrl) : null;
+    var usePlyr = !!(ytId || vmId);
     if(hasVideo){
-      var src = videoEmbedUrl(payload.videoUrl);
-      isYt = !!youtubeId(payload.videoUrl);
-      if(isYt){
-        var ytId = youtubeId(payload.videoUrl);
-        var thumb = 'https://img.youtube.com/vi/'+ytId+'/maxresdefault.jpg';
+      var src = videoEmbedUrl(payload.videoUrl, ytId, vmId);
+      if(usePlyr){
         html += '<div class="video-wrap">'
-          + '<iframe id="yt-player" src="'+src+'" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>'
-          + '<div class="video-overlay" id="video-overlay" style="background-image:url(\\''+thumb+'\\')"><button type="button" class="play-btn" aria-label="再生">'+PLAY_ICON+'</button></div>'
+          + '<div class="plyr__video-embed" id="lp-player">'
+          +   '<iframe src="'+src+'" allowtransparency allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>'
+          + '</div>'
           + '</div>';
       } else {
         html += '<div class="video-wrap"><iframe src="'+src+'" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></div>';
@@ -611,7 +582,13 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
         + '</div>';
     }
     app.innerHTML = html;
-    if(hasVideo && isYt) initYouTubePlayer();
+    if(usePlyr){
+      var player = new Plyr('#lp-player', {
+        youtube: { noCookie: false, rel: 0, showinfo: 0, iv_load_policy: 3, modestbranding: 1, playsinline: 1 },
+        vimeo:   { byline: false, portrait: false, title: false }
+      });
+      if(ytId) player.poster = 'https://img.youtube.com/vi/'+ytId+'/maxresdefault.jpg';
+    }
   }
 
   function startCountdown(expiresAtMs, serverNowMs, redirectUrl){
