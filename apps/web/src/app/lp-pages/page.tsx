@@ -145,8 +145,9 @@ export default function LpPagesPage() {
                 <tr key={lp.id} className="border-t border-gray-100 hover:bg-gray-50">
                   <td className="px-4 py-3">
                     <div className="font-medium text-gray-900">{lp.name}</div>
-                    <div className="text-xs text-gray-500 mt-0.5">
-                      {lp.contentType === 'video' ? '🎬 動画' : '📄 ページ'}
+                    <div className="text-xs text-gray-500 mt-0.5 flex gap-1 flex-wrap">
+                      {lp.videoUrl && <span>🎬 動画あり</span>}
+                      {lp.body && <span>📄 本文あり</span>}
                     </div>
                   </td>
                   <td className="px-4 py-3">

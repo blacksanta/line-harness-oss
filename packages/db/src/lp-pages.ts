@@ -3,7 +3,6 @@ import { jstNow } from './utils.js';
 // LP Pages — 視聴期限付きランディングページ（UTAGE風）
 // =============================================================================
 
-export type ContentType = 'video' | 'page';
 export type AccessWindowMode = 'absolute' | 'relative' | 'both' | 'none';
 export type AccessReason = 'expired' | 'not_yet' | 'not_friend' | 'inactive';
 export type AccessResultStatus = 'allowed' | 'expired' | 'not_yet' | 'not_friend' | 'inactive';
@@ -14,7 +13,6 @@ export interface LpPage {
   name: string;
   slug: string;
 
-  content_type: ContentType;
   video_url: string | null;
   body: string | null;
 
@@ -132,7 +130,6 @@ export async function getLpPageBySlug(db: D1Database, slug: string): Promise<LpP
 export interface CreateLpPageInput {
   name: string;
   slug: string;
-  contentType: ContentType;
   videoUrl?: string | null;
   body?: string | null;
   accessWindowMode: AccessWindowMode;
@@ -153,18 +150,17 @@ export async function createLpPage(db: D1Database, input: CreateLpPageInput): Pr
     .prepare(
       `INSERT INTO lp_pages
          (id, line_account_id, name, slug,
-          content_type, video_url, body,
+          video_url, body,
           access_window_mode, absolute_starts_at, absolute_ends_at, relative_days_after_friend_add,
           expired_redirect_url, not_friend_redirect_url,
           is_active, view_count, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
     )
     .bind(
       id,
       input.lineAccountId ?? null,
       input.name,
       input.slug,
-      input.contentType,
       input.videoUrl ?? null,
       input.body ?? null,
       input.accessWindowMode,
@@ -185,7 +181,6 @@ export async function createLpPage(db: D1Database, input: CreateLpPageInput): Pr
 export interface UpdateLpPageInput {
   name?: string;
   slug?: string;
-  contentType?: ContentType;
   videoUrl?: string | null;
   body?: string | null;
   accessWindowMode?: AccessWindowMode;
@@ -213,7 +208,6 @@ export async function updateLpPage(
          SET line_account_id = ?,
              name = ?,
              slug = ?,
-             content_type = ?,
              video_url = ?,
              body = ?,
              access_window_mode = ?,
@@ -230,7 +224,6 @@ export async function updateLpPage(
       'lineAccountId' in input ? (input.lineAccountId ?? null) : existing.line_account_id,
       input.name ?? existing.name,
       input.slug ?? existing.slug,
-      input.contentType ?? existing.content_type,
       'videoUrl' in input ? (input.videoUrl ?? null) : existing.video_url,
       'body' in input ? (input.body ?? null) : existing.body,
       input.accessWindowMode ?? existing.access_window_mode,

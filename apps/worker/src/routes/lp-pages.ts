@@ -23,7 +23,6 @@ function serializeLpPage(row: LpPage) {
     lineAccountId: row.line_account_id,
     name: row.name,
     slug: row.slug,
-    contentType: row.content_type,
     videoUrl: row.video_url,
     body: row.body,
     accessWindowMode: row.access_window_mode,
@@ -68,7 +67,6 @@ lpPages.post('/api/lp-pages', async (c) => {
     const body = await c.req.json<{
       name: string;
       slug?: string;
-      contentType: 'video' | 'page';
       videoUrl?: string | null;
       body?: string | null;
       accessWindowMode: 'absolute' | 'relative' | 'both' | 'none';
@@ -82,14 +80,14 @@ lpPages.post('/api/lp-pages', async (c) => {
     }>();
 
     if (!body.name) return c.json({ success: false, error: 'name is required' }, 400);
-    if (!body.contentType) return c.json({ success: false, error: 'contentType is required' }, 400);
     if (!body.expiredRedirectUrl) return c.json({ success: false, error: 'expiredRedirectUrl is required' }, 400);
-    if (body.contentType === 'video' && !body.videoUrl) {
-      return c.json({ success: false, error: 'videoUrl is required for video content' }, 400);
+
+    const hasVideo = typeof body.videoUrl === 'string' && body.videoUrl.trim() !== '';
+    const hasBody = typeof body.body === 'string' && body.body.trim() !== '';
+    if (!hasVideo && !hasBody) {
+      return c.json({ success: false, error: 'videoUrl or body is required' }, 400);
     }
-    if (body.contentType === 'page' && !body.body) {
-      return c.json({ success: false, error: 'body is required for page content' }, 400);
-    }
+
     if ((body.accessWindowMode === 'relative' || body.accessWindowMode === 'both') && !body.relativeDaysAfterFriendAdd) {
       return c.json({ success: false, error: 'relativeDaysAfterFriendAdd is required for relative/both mode' }, 400);
     }
@@ -104,7 +102,6 @@ lpPages.post('/api/lp-pages', async (c) => {
     const lp = await createLpPage(c.env.DB, {
       name: body.name,
       slug,
-      contentType: body.contentType,
       videoUrl: body.videoUrl ?? null,
       body: body.body ?? null,
       accessWindowMode: body.accessWindowMode,
@@ -136,9 +133,12 @@ lpPages.put('/api/lp-pages/:id', async (c) => {
     const id = c.req.param('id');
     const body = await c.req.json<Record<string, unknown>>();
 
+    const existing = await getLpPageById(c.env.DB, id);
+    if (!existing) return c.json({ success: false, error: 'LP not found' }, 404);
+
     const updates: Record<string, unknown> = {};
     const passthrough = [
-      'name', 'slug', 'contentType', 'videoUrl', 'body',
+      'name', 'slug', 'videoUrl', 'body',
       'accessWindowMode', 'absoluteStartsAt', 'absoluteEndsAt', 'relativeDaysAfterFriendAdd',
       'expiredRedirectUrl', 'notFriendRedirectUrl', 'lineAccountId', 'isActive',
     ] as const;
@@ -151,6 +151,15 @@ lpPages.put('/api/lp-pages/:id', async (c) => {
       if (dup && dup.id !== id) {
         return c.json({ success: false, error: `slug "${updates.slug}" is already taken` }, 409);
       }
+    }
+
+    // videoUrl と body のマージ結果がどちらも空になる場合は拒否
+    const nextVideo = 'videoUrl' in updates ? updates.videoUrl : existing.video_url;
+    const nextBody = 'body' in updates ? updates.body : existing.body;
+    const hasVideo = typeof nextVideo === 'string' && nextVideo.trim() !== '';
+    const hasBody = typeof nextBody === 'string' && nextBody.trim() !== '';
+    if (!hasVideo && !hasBody) {
+      return c.json({ success: false, error: 'videoUrl or body must be set' }, 400);
     }
 
     const updated = await updateLpPage(c.env.DB, id, updates as never);
@@ -203,7 +212,6 @@ lpPages.get('/api/lp-pages/by-slug/:slug', async (c) => {
         id: lp.id,
         name: lp.name,
         slug: lp.slug,
-        contentType: lp.content_type,
       },
     });
   } catch (err) {
@@ -248,7 +256,6 @@ lpPages.post('/api/lp-pages/:id/check-access', async (c) => {
       data: {
         allowed: true,
         payload: {
-          contentType: lp.content_type,
           videoUrl: lp.video_url,
           body: lp.body,
           name: lp.name,

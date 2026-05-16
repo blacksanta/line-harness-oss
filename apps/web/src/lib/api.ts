@@ -574,7 +574,6 @@ export interface LpPage {
   lineAccountId: string | null
   name: string
   slug: string
-  contentType: 'video' | 'page'
   videoUrl: string | null
   body: string | null
   accessWindowMode: 'absolute' | 'relative' | 'both' | 'none'

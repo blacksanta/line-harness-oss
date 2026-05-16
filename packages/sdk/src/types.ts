@@ -350,7 +350,6 @@ export interface FormSubmission {
 }
 
 // ─── LP Pages（視聴期限付きランディングページ） ─────────────
-export type LpContentType = 'video' | 'page'
 export type LpAccessWindowMode = 'absolute' | 'relative' | 'both' | 'none'
 export type LpAccessReason = 'expired' | 'not_yet' | 'not_friend' | 'inactive'
 
@@ -359,7 +358,6 @@ export interface LpPage {
   lineAccountId: string | null
   name: string
   slug: string
-  contentType: LpContentType
   videoUrl: string | null
   body: string | null
   accessWindowMode: LpAccessWindowMode
@@ -378,7 +376,6 @@ export interface LpPage {
 export interface CreateLpPageInput {
   name: string
   slug?: string
-  contentType: LpContentType
   videoUrl?: string | null
   body?: string | null
   accessWindowMode: LpAccessWindowMode
@@ -394,7 +391,6 @@ export interface CreateLpPageInput {
 export interface UpdateLpPageInput {
   name?: string
   slug?: string
-  contentType?: LpContentType
   videoUrl?: string | null
   body?: string | null
   accessWindowMode?: LpAccessWindowMode

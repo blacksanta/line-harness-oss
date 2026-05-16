@@ -12,17 +12,14 @@ export function registerCreateLpPage(server: McpServer): void {
         .string()
         .optional()
         .describe("公開URL用のスラッグ（未指定ならランダム8文字を自動生成、UNIQUE制約あり）"),
-      contentType: z
-        .enum(["video", "page"])
-        .describe("コンテンツ種別。video=YouTube/Vimeo埋め込み, page=Markdown本文"),
       videoUrl: z
         .string()
         .optional()
-        .describe("動画URL（contentType=videoのとき必須。YouTube/Vimeoの通常URLでOK）"),
+        .describe("動画URL（任意。YouTube/Vimeoの通常URLでOK。body と合わせていずれか1つは必須。両方指定すると公開ページで動画→本文の順に表示される）"),
       body: z
         .string()
         .optional()
-        .describe("Markdown本文（contentType=pageのとき必須）"),
+        .describe("Markdown本文（任意。videoUrl と合わせていずれか1つは必須。両方指定すると公開ページで動画→本文の順に表示される）"),
       accessWindowMode: z
         .enum(["absolute", "relative", "both", "none"])
         .describe("期限モード。absolute=絶対日時, relative=友だち登録から N日, both=両方AND, none=無期限"),
@@ -56,6 +53,19 @@ export function registerCreateLpPage(server: McpServer): void {
     },
     async (input) => {
       try {
+        const hasVideo = typeof input.videoUrl === "string" && input.videoUrl.trim() !== "";
+        const hasBody = typeof input.body === "string" && input.body.trim() !== "";
+        if (!hasVideo && !hasBody) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({ success: false, error: "videoUrl or body is required" }, null, 2),
+              },
+            ],
+            isError: true,
+          };
+        }
         const client = getClient();
         const lp = await client.lpPages.create(input);
         return {
