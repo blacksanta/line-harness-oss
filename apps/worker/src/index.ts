@@ -486,8 +486,8 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 .wrap{max-width:780px;margin:0 auto;padding:24px 16px}
 .loading{text-align:center;padding:80px 20px;color:#888}
 .video-wrap{position:relative;padding-bottom:56.25%;height:0;border-radius:12px;overflow:hidden;background:#000;box-shadow:0 4px 24px rgba(0,0,0,0.08)}
-.video-wrap iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0}
-.video-wrap .plyr{position:absolute;inset:0;width:100%;height:100%;border-radius:12px}
+.video-wrap > iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0}
+.video-wrap .plyr{position:absolute;inset:0;width:100%;height:100%;border-radius:12px;overflow:hidden}
 .title{font-size:22px;font-weight:700;margin:24px 0 12px;color:#0f172a}
 .body img{max-width:100%;height:auto;border-radius:8px;margin:16px 0}
 .body h1,.body h2,.body h3{margin:24px 0 12px;font-weight:700;color:#0f172a}
