@@ -1,9 +1,19 @@
 'use client'
 
+import dynamic from 'next/dynamic'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { LpBlock } from '@/lib/api'
 import { BLOCK_ICONS, BLOCK_LABELS } from '@/lib/lp-blocks'
+
+const RichTextEditor = dynamic(() => import('./rich-text-editor'), {
+  ssr: false,
+  loading: () => (
+    <div className="min-h-[120px] p-3 border border-gray-200 rounded bg-gray-50 text-xs text-gray-400">
+      エディタを読み込み中...
+    </div>
+  ),
+})
 
 interface Props {
   block: LpBlock
@@ -58,12 +68,10 @@ function BlockBody({ block, onChange }: { block: LpBlock; onChange: (b: LpBlock)
   switch (block.type) {
     case 'markdown':
       return (
-        <textarea
+        <RichTextEditor
           value={block.text}
-          onChange={(e) => onChange({ ...block, text: e.target.value })}
-          rows={6}
-          placeholder="# 見出し&#10;&#10;Markdown 本文..."
-          className="w-full p-2 border border-gray-300 rounded text-sm font-mono"
+          onChange={(html) => onChange({ ...block, text: html })}
+          placeholder="本文を入力..."
         />
       )
 

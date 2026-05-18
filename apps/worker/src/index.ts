@@ -488,7 +488,6 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 .video-wrap{position:relative;padding-bottom:56.25%;height:0;border-radius:12px;overflow:hidden;background:#000;box-shadow:0 4px 24px rgba(0,0,0,0.08);margin:16px 0}
 .video-wrap > iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0}
 .video-wrap .plyr{position:absolute;inset:0;width:100%;height:100%;border-radius:12px;overflow:hidden}
-.title{font-size:22px;font-weight:700;margin:24px 0 12px;color:#0f172a}
 .block-image{margin:16px 0;text-align:center}
 .block-image img{max-width:100%;height:auto;border-radius:8px}
 .block-button{text-align:center;margin:24px 0}
@@ -570,8 +569,12 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
     if(!block || typeof block.type !== 'string') return '';
     switch(block.type){
       case 'markdown': {
-        var raw = window.marked ? window.marked.parse(block.text || '') : (block.text || '');
-        var clean = window.DOMPurify ? window.DOMPurify.sanitize(raw) : raw;
+        var text = block.text || '';
+        var isHtml = /<\\/?[a-z][\\s\\S]*?>/i.test(text);
+        var raw = isHtml ? text : (window.marked ? window.marked.parse(text) : text);
+        var clean = window.DOMPurify
+          ? window.DOMPurify.sanitize(raw, { ADD_ATTR: ['style', 'target', 'rel'] })
+          : raw;
         return '<div class="body">' + clean + '</div>';
       }
       case 'video': {
@@ -615,7 +618,7 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
 
   function render(payload, hasExpiry){
     app.className = '';
-    var html = '<h1 class="title">' + escapeHtml(payload.name) + '</h1>';
+    var html = '';
 
     var blocks = (payload.blocks && payload.blocks.length) ? payload.blocks : legacyFallbackBlocks(payload);
 
