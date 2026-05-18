@@ -7,6 +7,22 @@ export type AccessWindowMode = 'absolute' | 'relative' | 'both' | 'none';
 export type AccessReason = 'expired' | 'not_yet' | 'not_friend' | 'inactive';
 export type AccessResultStatus = 'allowed' | 'expired' | 'not_yet' | 'not_friend' | 'inactive';
 
+// ── ブロック型 ──────────────────────────────────────────────────────────────
+export type LpBlock =
+  | { id: string; type: 'video'; url: string; caption?: string | null }
+  | { id: string; type: 'markdown'; text: string }
+  | { id: string; type: 'image'; url: string; alt?: string | null; href?: string | null }
+  | {
+      id: string;
+      type: 'button';
+      label: string;
+      href: string;
+      style?: 'primary' | 'secondary';
+    }
+  | { id: string; type: 'divider' };
+
+export type LpBlockType = LpBlock['type'];
+
 export interface LpPage {
   id: string;
   line_account_id: string | null;
@@ -15,6 +31,7 @@ export interface LpPage {
 
   video_url: string | null;
   body: string | null;
+  blocks: string | null;
 
   access_window_mode: AccessWindowMode;
   absolute_starts_at: string | null;
@@ -40,6 +57,104 @@ export interface LpView {
   referrer: string | null;
   access_result: AccessResultStatus;
   reason: string | null;
+}
+
+// ── ブロックヘルパ（純粋関数） ──────────────────────────────────────────────
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+export function parseBlocks(raw: string | null | undefined): LpBlock[] {
+  if (!raw) return [];
+  try {
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    return arr.filter((b): b is LpBlock => isPlainObject(b) && typeof b.type === 'string');
+  } catch {
+    return [];
+  }
+}
+
+export function deriveBlocksFromLegacy(
+  videoUrl: string | null | undefined,
+  body: string | null | undefined,
+): LpBlock[] {
+  const out: LpBlock[] = [];
+  if (videoUrl && videoUrl.trim()) {
+    out.push({ id: crypto.randomUUID(), type: 'video', url: videoUrl });
+  }
+  if (body && body.trim()) {
+    out.push({ id: crypto.randomUUID(), type: 'markdown', text: body });
+  }
+  return out;
+}
+
+export function deriveLegacyFromBlocks(blocks: LpBlock[]): {
+  videoUrl: string | null;
+  body: string | null;
+} {
+  const firstVideo = blocks.find(
+    (b): b is Extract<LpBlock, { type: 'video' }> => b.type === 'video',
+  );
+  const markdowns = blocks.filter(
+    (b): b is Extract<LpBlock, { type: 'markdown' }> => b.type === 'markdown',
+  );
+  return {
+    videoUrl: firstVideo?.url ?? null,
+    body: markdowns.length ? markdowns.map((b) => b.text).join('\n\n---\n\n') : null,
+  };
+}
+
+/**
+ * ブロックを正規化する。id が無ければ採番、type / 必須フィールドを検証。
+ * 不正なブロックは Error を throw（API層が 400 で返す前提）。
+ */
+export function normalizeBlocks(blocks: unknown): LpBlock[] {
+  if (!Array.isArray(blocks)) throw new Error('blocks must be an array');
+  return blocks.map((raw, i) => {
+    if (!isPlainObject(raw)) throw new Error(`blocks[${i}] must be an object`);
+    const id = typeof raw.id === 'string' && raw.id ? raw.id : crypto.randomUUID();
+    const type = raw.type;
+    switch (type) {
+      case 'video': {
+        if (typeof raw.url !== 'string' || !raw.url.trim()) {
+          throw new Error(`blocks[${i}].url is required for video`);
+        }
+        const caption =
+          typeof raw.caption === 'string' ? raw.caption : raw.caption == null ? null : null;
+        return { id, type: 'video', url: raw.url, caption };
+      }
+      case 'markdown': {
+        if (typeof raw.text !== 'string') {
+          throw new Error(`blocks[${i}].text is required for markdown`);
+        }
+        return { id, type: 'markdown', text: raw.text };
+      }
+      case 'image': {
+        if (typeof raw.url !== 'string' || !raw.url.trim()) {
+          throw new Error(`blocks[${i}].url is required for image`);
+        }
+        const alt = typeof raw.alt === 'string' ? raw.alt : null;
+        const href = typeof raw.href === 'string' && raw.href.trim() ? raw.href : null;
+        return { id, type: 'image', url: raw.url, alt, href };
+      }
+      case 'button': {
+        if (typeof raw.label !== 'string' || !raw.label.trim()) {
+          throw new Error(`blocks[${i}].label is required for button`);
+        }
+        if (typeof raw.href !== 'string' || !raw.href.trim()) {
+          throw new Error(`blocks[${i}].href is required for button`);
+        }
+        const style = raw.style === 'secondary' ? 'secondary' : 'primary';
+        return { id, type: 'button', label: raw.label, href: raw.href, style };
+      }
+      case 'divider':
+        return { id, type: 'divider' };
+      default:
+        throw new Error(`blocks[${i}].type "${String(type)}" is not supported`);
+    }
+  });
 }
 
 // ── 期限判定（純粋関数：テスト容易） ────────────────────────────────────────
@@ -132,6 +247,7 @@ export interface CreateLpPageInput {
   slug: string;
   videoUrl?: string | null;
   body?: string | null;
+  blocks?: LpBlock[] | null;
   accessWindowMode: AccessWindowMode;
   absoluteStartsAt?: string | null;
   absoluteEndsAt?: string | null;
@@ -150,11 +266,11 @@ export async function createLpPage(db: D1Database, input: CreateLpPageInput): Pr
     .prepare(
       `INSERT INTO lp_pages
          (id, line_account_id, name, slug,
-          video_url, body,
+          video_url, body, blocks,
           access_window_mode, absolute_starts_at, absolute_ends_at, relative_days_after_friend_add,
           expired_redirect_url, not_friend_redirect_url,
           is_active, view_count, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
     )
     .bind(
       id,
@@ -163,6 +279,7 @@ export async function createLpPage(db: D1Database, input: CreateLpPageInput): Pr
       input.slug,
       input.videoUrl ?? null,
       input.body ?? null,
+      input.blocks ? JSON.stringify(input.blocks) : null,
       input.accessWindowMode,
       input.absoluteStartsAt ?? null,
       input.absoluteEndsAt ?? null,
@@ -183,6 +300,7 @@ export interface UpdateLpPageInput {
   slug?: string;
   videoUrl?: string | null;
   body?: string | null;
+  blocks?: LpBlock[] | null;
   accessWindowMode?: AccessWindowMode;
   absoluteStartsAt?: string | null;
   absoluteEndsAt?: string | null;
@@ -210,6 +328,7 @@ export async function updateLpPage(
              slug = ?,
              video_url = ?,
              body = ?,
+             blocks = ?,
              access_window_mode = ?,
              absolute_starts_at = ?,
              absolute_ends_at = ?,
@@ -226,6 +345,11 @@ export async function updateLpPage(
       input.slug ?? existing.slug,
       'videoUrl' in input ? (input.videoUrl ?? null) : existing.video_url,
       'body' in input ? (input.body ?? null) : existing.body,
+      'blocks' in input
+        ? input.blocks
+          ? JSON.stringify(input.blocks)
+          : null
+        : existing.blocks,
       input.accessWindowMode ?? existing.access_window_mode,
       'absoluteStartsAt' in input ? (input.absoluteStartsAt ?? null) : existing.absolute_starts_at,
       'absoluteEndsAt' in input ? (input.absoluteEndsAt ?? null) : existing.absolute_ends_at,

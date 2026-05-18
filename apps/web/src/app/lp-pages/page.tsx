@@ -1,8 +1,10 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import Link from 'next/link'
 import { api, type LpPage, type LpView } from '@/lib/api'
 import Header from '@/components/layout/header'
+import { summarizeBlocks } from '@/lib/lp-blocks'
 
 const accessResultLabels: Record<string, { label: string; color: string }> = {
   allowed: { label: '視聴OK', color: 'bg-green-100 text-green-700' },
@@ -110,7 +112,7 @@ export default function LpPagesPage() {
         <p className="font-semibold mb-1">📝 新規作成は Claude Code から</p>
         <p className="text-xs leading-relaxed">
           MCPツール <code className="px-1 py-0.5 bg-blue-100 rounded">create_lp_page</code> で作成してください。
-          管理画面では一覧表示・視聴ログ参照・有効化/無効化・削除のみ可能です。
+          作成済みLPは <span className="font-medium">「編集」</span> から動画・テキスト・画像・ボタンなどのブロックを自由に並び替え・追加できます。
         </p>
         <p className="text-xs mt-2 text-blue-700">
           例: <span className="font-mono">「友だち登録から7日間視聴できる動画LPを作って」</span>
@@ -145,9 +147,11 @@ export default function LpPagesPage() {
                 <tr key={lp.id} className="border-t border-gray-100 hover:bg-gray-50">
                   <td className="px-4 py-3">
                     <div className="font-medium text-gray-900">{lp.name}</div>
-                    <div className="text-xs text-gray-500 mt-0.5 flex gap-1 flex-wrap">
-                      {lp.videoUrl && <span>🎬 動画あり</span>}
-                      {lp.body && <span>📄 本文あり</span>}
+                    <div className="text-xs text-gray-500 mt-0.5">
+                      📦 {lp.blocks.length}ブロック
+                      {lp.blocks.length > 0 && (
+                        <span className="ml-1">（{summarizeBlocks(lp.blocks)}）</span>
+                      )}
                     </div>
                   </td>
                   <td className="px-4 py-3">
@@ -170,7 +174,13 @@ export default function LpPagesPage() {
                       {lp.isActive ? '有効' : '無効'}
                     </button>
                   </td>
-                  <td className="px-4 py-3 text-right space-x-2 text-xs">
+                  <td className="px-4 py-3 text-right space-x-2 text-xs whitespace-nowrap">
+                    <Link
+                      href={`/lp-pages/edit?id=${lp.id}`}
+                      className="text-blue-600 hover:underline"
+                    >
+                      編集
+                    </Link>
                     <button onClick={() => showViews(lp)} className="text-blue-600 hover:underline">
                       視聴ログ
                     </button>

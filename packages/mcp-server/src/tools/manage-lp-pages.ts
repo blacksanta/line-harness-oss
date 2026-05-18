@@ -2,10 +2,42 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getClient } from "../client.js";
 
+const lpBlockSchema = z.discriminatedUnion("type", [
+  z.object({
+    id: z.string().optional(),
+    type: z.literal("video"),
+    url: z.string().url(),
+    caption: z.string().optional(),
+  }),
+  z.object({
+    id: z.string().optional(),
+    type: z.literal("markdown"),
+    text: z.string(),
+  }),
+  z.object({
+    id: z.string().optional(),
+    type: z.literal("image"),
+    url: z.string().url(),
+    alt: z.string().optional(),
+    href: z.string().url().optional(),
+  }),
+  z.object({
+    id: z.string().optional(),
+    type: z.literal("button"),
+    label: z.string(),
+    href: z.string().url(),
+    style: z.enum(["primary", "secondary"]).optional(),
+  }),
+  z.object({
+    id: z.string().optional(),
+    type: z.literal("divider"),
+  }),
+]);
+
 export function registerManageLpPages(server: McpServer): void {
   server.tool(
     "manage_lp_pages",
-    "視聴期限付きLPの管理操作。list: 一覧、get: 詳細、update: 更新、delete: 削除、get_views: 視聴ログ、activate/deactivate: 有効化/無効化。新規作成は create_lp_page を使用。",
+    "視聴期限付きLPの管理操作。list: 一覧、get: 詳細、update: 更新（blocks を含むコンテンツ並び替え可）、delete: 削除、get_views: 視聴ログ、activate/deactivate: 有効化/無効化。新規作成は create_lp_page を使用。",
     {
       action: z
         .enum(["list", "get", "update", "delete", "get_views", "activate", "deactivate"])
@@ -13,8 +45,15 @@ export function registerManageLpPages(server: McpServer): void {
       lpPageId: z.string().optional().describe("LP ID（list以外で必須）"),
       name: z.string().optional(),
       slug: z.string().optional(),
-      videoUrl: z.string().nullable().optional().describe("動画URL。null/空でクリア。videoUrl と body の両方が空になる更新は拒否される"),
-      body: z.string().nullable().optional().describe("Markdown本文。null/空でクリア。videoUrl と body の両方が空になる更新は拒否される"),
+      blocks: z
+        .array(lpBlockSchema)
+        .nullable()
+        .optional()
+        .describe(
+          "コンテンツブロック配列（video/markdown/image/button/divider を任意順）。指定すると並び替え・差し替えが反映される。空配列は拒否される",
+        ),
+      videoUrl: z.string().nullable().optional().describe("動画URL（後方互換）。null/空でクリア。blocks を指定するとそちらが優先される"),
+      body: z.string().nullable().optional().describe("Markdown本文（後方互換）。null/空でクリア。blocks を指定するとそちらが優先される"),
       accessWindowMode: z.enum(["absolute", "relative", "both", "none"]).optional(),
       absoluteStartsAt: z.string().nullable().optional(),
       absoluteEndsAt: z.string().nullable().optional(),
@@ -29,6 +68,7 @@ export function registerManageLpPages(server: McpServer): void {
       lpPageId,
       name,
       slug,
+      blocks,
       videoUrl,
       body,
       accessWindowMode,
@@ -74,6 +114,7 @@ export function registerManageLpPages(server: McpServer): void {
           const updates: Record<string, unknown> = {};
           if (name !== undefined) updates.name = name;
           if (slug !== undefined) updates.slug = slug;
+          if (blocks !== undefined) updates.blocks = blocks;
           if (videoUrl !== undefined) updates.videoUrl = videoUrl;
           if (body !== undefined) updates.body = body;
           if (accessWindowMode !== undefined) updates.accessWindowMode = accessWindowMode;

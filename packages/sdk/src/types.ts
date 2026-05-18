@@ -353,6 +353,15 @@ export interface FormSubmission {
 export type LpAccessWindowMode = 'absolute' | 'relative' | 'both' | 'none'
 export type LpAccessReason = 'expired' | 'not_yet' | 'not_friend' | 'inactive'
 
+export type LpBlock =
+  | { id: string; type: 'video'; url: string; caption?: string | null }
+  | { id: string; type: 'markdown'; text: string }
+  | { id: string; type: 'image'; url: string; alt?: string | null; href?: string | null }
+  | { id: string; type: 'button'; label: string; href: string; style?: 'primary' | 'secondary' }
+  | { id: string; type: 'divider' }
+
+export type LpBlockType = LpBlock['type']
+
 export interface LpPage {
   id: string
   lineAccountId: string | null
@@ -360,6 +369,7 @@ export interface LpPage {
   slug: string
   videoUrl: string | null
   body: string | null
+  blocks: LpBlock[]
   accessWindowMode: LpAccessWindowMode
   absoluteStartsAt: string | null
   absoluteEndsAt: string | null
@@ -378,6 +388,7 @@ export interface CreateLpPageInput {
   slug?: string
   videoUrl?: string | null
   body?: string | null
+  blocks?: LpBlock[] | null
   accessWindowMode: LpAccessWindowMode
   absoluteStartsAt?: string | null
   absoluteEndsAt?: string | null
@@ -393,6 +404,7 @@ export interface UpdateLpPageInput {
   slug?: string
   videoUrl?: string | null
   body?: string | null
+  blocks?: LpBlock[] | null
   accessWindowMode?: LpAccessWindowMode
   absoluteStartsAt?: string | null
   absoluteEndsAt?: string | null

@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { isLpAccessible, computeLpExpiryMs, type LpPage } from '@line-crm/db';
+import {
+  isLpAccessible,
+  computeLpExpiryMs,
+  parseBlocks,
+  deriveBlocksFromLegacy,
+  deriveLegacyFromBlocks,
+  normalizeBlocks,
+  type LpPage,
+} from '@line-crm/db';
 
 const baseLp: LpPage = {
   id: 'lp_1',
@@ -8,6 +16,7 @@ const baseLp: LpPage = {
   slug: 'test',
   video_url: 'https://www.youtube.com/watch?v=xxx',
   body: null,
+  blocks: null,
   access_window_mode: 'none',
   absolute_starts_at: null,
   absolute_ends_at: null,
@@ -223,5 +232,124 @@ describe('computeLpExpiryMs', () => {
   it('both モード: 両方未設定なら null', () => {
     const lp: LpPage = { ...baseLp, access_window_mode: 'both' };
     expect(computeLpExpiryMs(lp, friend)).toBeNull();
+  });
+});
+
+describe('parseBlocks', () => {
+  it('null は []', () => {
+    expect(parseBlocks(null)).toEqual([]);
+  });
+
+  it('空文字は []', () => {
+    expect(parseBlocks('')).toEqual([]);
+  });
+
+  it('不正JSONは []', () => {
+    expect(parseBlocks('{not json}')).toEqual([]);
+  });
+
+  it('配列でない場合は []', () => {
+    expect(parseBlocks('{"type":"video"}')).toEqual([]);
+  });
+
+  it('正常な配列はそのまま返す', () => {
+    const raw = JSON.stringify([
+      { id: 'a', type: 'video', url: 'https://example.com/v' },
+      { id: 'b', type: 'markdown', text: 'hello' },
+    ]);
+    expect(parseBlocks(raw)).toHaveLength(2);
+  });
+
+  it('typeが文字列でない要素は除外', () => {
+    const raw = JSON.stringify([
+      { id: 'a', type: 'video', url: 'https://example.com/v' },
+      { id: 'b' },
+      'not-an-object',
+    ]);
+    expect(parseBlocks(raw)).toHaveLength(1);
+  });
+});
+
+describe('deriveBlocksFromLegacy', () => {
+  it('video のみ → [video]', () => {
+    const r = deriveBlocksFromLegacy('https://youtu.be/x', null);
+    expect(r).toHaveLength(1);
+    expect(r[0].type).toBe('video');
+  });
+
+  it('body のみ → [markdown]', () => {
+    const r = deriveBlocksFromLegacy(null, '# title');
+    expect(r).toHaveLength(1);
+    expect(r[0].type).toBe('markdown');
+  });
+
+  it('両方 → [video, markdown]', () => {
+    const r = deriveBlocksFromLegacy('https://youtu.be/x', '# title');
+    expect(r.map((b) => b.type)).toEqual(['video', 'markdown']);
+  });
+
+  it('両方なし → []', () => {
+    expect(deriveBlocksFromLegacy(null, null)).toEqual([]);
+  });
+
+  it('空白文字のみは扱わない', () => {
+    expect(deriveBlocksFromLegacy('   ', '  ')).toEqual([]);
+  });
+});
+
+describe('deriveLegacyFromBlocks', () => {
+  it('最初の video が videoUrl になる', () => {
+    const r = deriveLegacyFromBlocks([
+      { id: '1', type: 'video', url: 'https://a/1' },
+      { id: '2', type: 'video', url: 'https://a/2' },
+    ]);
+    expect(r.videoUrl).toBe('https://a/1');
+  });
+
+  it('markdown 複数は --- で連結', () => {
+    const r = deriveLegacyFromBlocks([
+      { id: '1', type: 'markdown', text: 'intro' },
+      { id: '2', type: 'markdown', text: 'outro' },
+    ]);
+    expect(r.body).toBe('intro\n\n---\n\noutro');
+  });
+
+  it('video/markdown が無い場合は null/null', () => {
+    const r = deriveLegacyFromBlocks([{ id: '1', type: 'divider' }]);
+    expect(r).toEqual({ videoUrl: null, body: null });
+  });
+});
+
+describe('normalizeBlocks', () => {
+  it('id 欠落は自動採番', () => {
+    const r = normalizeBlocks([{ type: 'markdown', text: 'hi' }]);
+    expect(r[0].id).toBeTruthy();
+  });
+
+  it('未知の type は throw', () => {
+    expect(() => normalizeBlocks([{ type: 'unknown' }])).toThrow();
+  });
+
+  it('video.url 必須', () => {
+    expect(() => normalizeBlocks([{ type: 'video', url: '' }])).toThrow();
+  });
+
+  it('button.label/href 必須', () => {
+    expect(() => normalizeBlocks([{ type: 'button', label: '', href: 'x' }])).toThrow();
+    expect(() => normalizeBlocks([{ type: 'button', label: 'ok', href: '' }])).toThrow();
+  });
+
+  it('divider はフィールド不要', () => {
+    const r = normalizeBlocks([{ type: 'divider' }]);
+    expect(r[0]).toMatchObject({ type: 'divider' });
+  });
+
+  it('image の alt/href は省略可', () => {
+    const r = normalizeBlocks([{ type: 'image', url: 'https://x' }]);
+    expect(r[0]).toMatchObject({ type: 'image', url: 'https://x', alt: null, href: null });
+  });
+
+  it('配列でない入力は throw', () => {
+    expect(() => normalizeBlocks('not-an-array' as never)).toThrow();
   });
 });
