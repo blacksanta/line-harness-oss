@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { api, type LpPage, type LpView } from '@/lib/api'
 import Header from '@/components/layout/header'
+import { summarizeBlocks } from '@/lib/lp-blocks'
 
 const accessResultLabels: Record<string, { label: string; color: string }> = {
   allowed: { label: '視聴OK', color: 'bg-green-100 text-green-700' },
@@ -147,9 +148,11 @@ export default function LpPagesPage() {
                 <tr key={lp.id} className="border-t border-gray-100 hover:bg-gray-50">
                   <td className="px-4 py-3">
                     <div className="font-medium text-gray-900">{lp.name}</div>
-                    <div className="text-xs text-gray-500 mt-0.5 flex gap-1 flex-wrap">
-                      {lp.videoUrl && <span>🎬 動画あり</span>}
-                      {lp.body && <span>📄 本文あり</span>}
+                    <div className="text-xs text-gray-500 mt-0.5">
+                      📦 {lp.blocks.length}ブロック
+                      {lp.blocks.length > 0 && (
+                        <span className="ml-1">（{summarizeBlocks(lp.blocks)}）</span>
+                      )}
                     </div>
                   </td>
                   <td className="px-4 py-3">
@@ -172,7 +175,7 @@ export default function LpPagesPage() {
                       {lp.isActive ? '有効' : '無効'}
                     </button>
                   </td>
-                  <td className="px-4 py-3 text-right space-x-2 text-xs">
+                  <td className="px-4 py-3 text-right space-x-2 text-xs whitespace-nowrap">
                     <button
                       onClick={() => router.push(`/lp-pages/edit?id=${lp.id}`)}
                       className="text-gray-700 hover:underline"

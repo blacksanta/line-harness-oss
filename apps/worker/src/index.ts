@@ -485,10 +485,17 @@ app.get('/lp/:slug', async (c) => {
 body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;background:#fafafa;color:#1e293b;line-height:1.7}
 .wrap{max-width:780px;margin:0 auto;padding:24px 16px}
 .loading{text-align:center;padding:80px 20px;color:#888}
-.video-wrap{position:relative;padding-bottom:56.25%;height:0;border-radius:12px;overflow:hidden;background:#000;box-shadow:0 4px 24px rgba(0,0,0,0.08)}
+.video-wrap{position:relative;padding-bottom:56.25%;height:0;border-radius:12px;overflow:hidden;background:#000;box-shadow:0 4px 24px rgba(0,0,0,0.08);margin:16px 0}
 .video-wrap > iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0}
 .video-wrap .plyr{position:absolute;inset:0;width:100%;height:100%;border-radius:12px;overflow:hidden}
 .title{font-size:22px;font-weight:700;margin:24px 0 12px;color:#0f172a}
+.block-image{margin:16px 0;text-align:center}
+.block-image img{max-width:100%;height:auto;border-radius:8px}
+.block-button{text-align:center;margin:24px 0}
+.btn{display:inline-block;padding:14px 28px;border-radius:8px;text-decoration:none;font-weight:700;line-height:1.2}
+.btn-primary{background:#06C755;color:#fff}
+.btn-secondary{background:#f1f5f9;color:#0f172a}
+.block-divider{margin:24px 0;border:none;border-top:1px solid #e2e8f0}
 .body img{max-width:100%;height:auto;border-radius:8px;margin:16px 0}
 .body h1,.body h2,.body h3{margin:24px 0 12px;font-weight:700;color:#0f172a}
 .body h1{font-size:24px}.body h2{font-size:20px}.body h3{font-size:17px}
@@ -527,6 +534,19 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
 
   function fail(msg){ app.className=''; app.innerHTML = '<div class="loading">'+msg+'</div>'; }
 
+  function escapeHtml(s){
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+
+  function safeUrl(u){
+    if(!u) return '#';
+    var t = String(u).trim().toLowerCase();
+    if(t.indexOf('javascript:') === 0 || t.indexOf('data:') === 0 || t.indexOf('vbscript:') === 0) return '#';
+    return u;
+  }
+
   function youtubeId(url){
     if(!url) return null;
     var m = url.match(/(?:youtu\\.be\\/|youtube\\.com\\/(?:watch\\?v=|embed\\/|shorts\\/))([\\w-]+)/);
@@ -546,30 +566,64 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
     return url; // fallback: そのまま埋め込み
   }
 
+  function renderBlock(block, index, plyrTargets){
+    if(!block || typeof block.type !== 'string') return '';
+    switch(block.type){
+      case 'markdown': {
+        var raw = window.marked ? window.marked.parse(block.text || '') : (block.text || '');
+        var clean = window.DOMPurify ? window.DOMPurify.sanitize(raw) : raw;
+        return '<div class="body">' + clean + '</div>';
+      }
+      case 'video': {
+        var ytId = youtubeId(block.url);
+        var vmId = ytId ? null : vimeoId(block.url);
+        var src = videoEmbedUrl(block.url, ytId, vmId);
+        var usePlyr = !!(ytId || vmId);
+        var pid = 'lp-player-' + index;
+        if(usePlyr){
+          plyrTargets.push({ selector: '#' + pid, ytId: ytId });
+          return '<div class="video-wrap"><div class="plyr__video-embed" id="' + pid + '">'
+               + '<iframe src="' + escapeHtml(src) + '" allowtransparency allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>'
+               + '</div></div>';
+        }
+        return '<div class="video-wrap"><iframe src="' + escapeHtml(src) + '" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></div>';
+      }
+      case 'image': {
+        var imgTag = '<img src="' + escapeHtml(safeUrl(block.url)) + '" alt="' + escapeHtml(block.alt || '') + '" loading="lazy">';
+        var inner = block.href
+          ? '<a href="' + escapeHtml(safeUrl(block.href)) + '" target="_blank" rel="noopener noreferrer">' + imgTag + '</a>'
+          : imgTag;
+        return '<div class="block-image">' + inner + '</div>';
+      }
+      case 'button': {
+        var cls = block.style === 'secondary' ? 'btn btn-secondary' : 'btn btn-primary';
+        return '<div class="block-button"><a class="' + cls + '" href="' + escapeHtml(safeUrl(block.href)) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(block.label || '') + '</a></div>';
+      }
+      case 'divider':
+        return '<hr class="block-divider">';
+      default:
+        return '';
+    }
+  }
+
+  function legacyFallbackBlocks(payload){
+    var arr = [];
+    if(payload.videoUrl) arr.push({ id:'legacy-v', type:'video', url: payload.videoUrl });
+    if(payload.body)     arr.push({ id:'legacy-b', type:'markdown', text: payload.body });
+    return arr;
+  }
+
   function render(payload, hasExpiry){
     app.className = '';
-    var html = '<h1 class="title">' + payload.name.replace(/[<>&]/g, function(c){return {'<':'&lt;','>':'&gt;','&':'&amp;'}[c];}) + '</h1>';
-    var hasVideo = !!payload.videoUrl;
-    var ytId = hasVideo ? youtubeId(payload.videoUrl) : null;
-    var vmId = hasVideo && !ytId ? vimeoId(payload.videoUrl) : null;
-    var usePlyr = !!(ytId || vmId);
-    if(hasVideo){
-      var src = videoEmbedUrl(payload.videoUrl, ytId, vmId);
-      if(usePlyr){
-        html += '<div class="video-wrap">'
-          + '<div class="plyr__video-embed" id="lp-player">'
-          +   '<iframe src="'+src+'" allowtransparency allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>'
-          + '</div>'
-          + '</div>';
-      } else {
-        html += '<div class="video-wrap"><iframe src="'+src+'" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></div>';
-      }
+    var html = '<h1 class="title">' + escapeHtml(payload.name) + '</h1>';
+
+    var blocks = (payload.blocks && payload.blocks.length) ? payload.blocks : legacyFallbackBlocks(payload);
+
+    var plyrTargets = [];
+    for(var i = 0; i < blocks.length; i++){
+      html += renderBlock(blocks[i], i, plyrTargets);
     }
-    if(payload.body){
-      var raw = window.marked ? window.marked.parse(payload.body) : payload.body;
-      var clean = window.DOMPurify ? window.DOMPurify.sanitize(raw) : raw;
-      html += '<div class="body">' + clean + '</div>';
-    }
+
     if(hasExpiry){
       html += '<div id="countdown" class="countdown" style="display:none" aria-live="off">'
         +   '<p class="countdown-title">公開終了まであと…</p>'
@@ -582,13 +636,14 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
         + '</div>';
     }
     app.innerHTML = html;
-    if(usePlyr){
-      var player = new Plyr('#lp-player', {
+
+    plyrTargets.forEach(function(t){
+      var p = new Plyr(t.selector, {
         youtube: { noCookie: false, rel: 0, showinfo: 0, iv_load_policy: 3, modestbranding: 1, playsinline: 1 },
         vimeo:   { byline: false, portrait: false, title: false }
       });
-      if(ytId) player.poster = 'https://img.youtube.com/vi/'+ytId+'/maxresdefault.jpg';
-    }
+      if(t.ytId) p.poster = 'https://img.youtube.com/vi/' + t.ytId + '/maxresdefault.jpg';
+    });
   }
 
   function startCountdown(expiresAtMs, serverNowMs, redirectUrl){

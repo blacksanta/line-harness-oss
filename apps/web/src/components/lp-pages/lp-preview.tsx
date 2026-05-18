@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { videoEmbedUrl, youtubeId, youtubePosterUrl, vimeoId } from '@/lib/lp-video'
+import type { LpBlock } from '@/lib/api'
 import type { LpFormState } from './lp-form-state'
 
 interface Props {
@@ -45,27 +46,30 @@ function pad(n: number): string {
   return n < 10 ? `0${n}` : String(n)
 }
 
+function safeUrl(u: string): string {
+  if (!u) return '#'
+  const t = u.trim().toLowerCase()
+  if (t.startsWith('javascript:') || t.startsWith('data:') || t.startsWith('vbscript:')) return '#'
+  return u
+}
+
 export default function LpPreview({ form }: Props) {
-  // marked + dompurify は SSR では走らない。クライアントマウント後に計算する。
-  const [bodyHtml, setBodyHtml] = useState('')
+  // marked + dompurify は SSR では走らない。各 markdown ブロックを html にレンダリング
+  const [markdownHtmls, setMarkdownHtmls] = useState<Record<string, string>>({})
 
   useEffect(() => {
-    if (!form.body.trim()) {
-      setBodyHtml('')
-      return
+    const next: Record<string, string> = {}
+    for (const b of form.blocks) {
+      if (b.type === 'markdown' && b.text.trim()) {
+        const raw = marked.parse(b.text, { async: false }) as string
+        next[b.id] = DOMPurify.sanitize(raw)
+      }
     }
-    const raw = marked.parse(form.body, { async: false }) as string
-    const clean = DOMPurify.sanitize(raw)
-    setBodyHtml(clean)
-  }, [form.body])
+    setMarkdownHtmls(next)
+  }, [form.blocks])
 
-  const videoSrc = useMemo(() => videoEmbedUrl(form.videoUrl), [form.videoUrl])
-  const ytPoster = useMemo(() => youtubePosterUrl(form.videoUrl), [form.videoUrl])
-  const isPlayerEmbed = useMemo(
-    () => !!(youtubeId(form.videoUrl) || vimeoId(form.videoUrl)),
-    [form.videoUrl],
-  )
   const countdown = sampleCountdown(form)
+  const hasContent = form.blocks.length > 0
 
   return (
     <div className="flex flex-col items-center">
@@ -107,63 +111,15 @@ export default function LpPreview({ form }: Props) {
             {form.name || '（タイトル未入力）'}
           </h1>
 
-          {videoSrc && (
-            <div
-              style={{
-                position: 'relative',
-                paddingBottom: '56.25%',
-                height: 0,
-                borderRadius: 12,
-                overflow: 'hidden',
-                background: '#000',
-                boxShadow: '0 4px 24px rgba(0,0,0,0.08)',
-                marginBottom: 20,
-              }}
-            >
-              {ytPoster && isPlayerEmbed && (
-                // youtube サムネを背景に置いて Plyr 風の見た目に近づける
-                <img
-                  src={ytPoster}
-                  alt=""
-                  style={{
-                    position: 'absolute',
-                    inset: 0,
-                    width: '100%',
-                    height: '100%',
-                    objectFit: 'cover',
-                    zIndex: 0,
-                  }}
-                />
-              )}
-              <iframe
-                src={videoSrc}
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  height: '100%',
-                  border: 0,
-                  zIndex: 1,
-                }}
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                allowFullScreen
-              />
-            </div>
-          )}
-
-          {bodyHtml && (
-            <div
-              className="lp-preview-body"
-              dangerouslySetInnerHTML={{ __html: bodyHtml }}
-            />
-          )}
-
-          {!videoSrc && !bodyHtml && (
+          {!hasContent && (
             <p style={{ color: '#94a3b8', fontSize: 13, marginTop: 24 }}>
-              動画URLまたは本文を入力するとここに表示されます。
+              ブロックを追加するとここに表示されます。
             </p>
           )}
+
+          {form.blocks.map((b) => (
+            <BlockPreview key={b.id} block={b} markdownHtml={markdownHtmls[b.id]} />
+          ))}
 
           {countdown && (
             <div style={{ margin: '24px 0 8px', textAlign: 'center' }}>
@@ -235,6 +191,134 @@ export default function LpPreview({ form }: Props) {
       `}</style>
     </div>
   )
+}
+
+function BlockPreview({ block, markdownHtml }: { block: LpBlock; markdownHtml?: string }) {
+  switch (block.type) {
+    case 'markdown':
+      if (!markdownHtml) return null
+      return <div className="lp-preview-body" dangerouslySetInnerHTML={{ __html: markdownHtml }} />
+
+    case 'video': {
+      const src = videoEmbedUrl(block.url)
+      const poster = youtubePosterUrl(block.url)
+      const isPlayer = !!(youtubeId(block.url) || vimeoId(block.url))
+      if (!src) {
+        return (
+          <p style={{ color: '#94a3b8', fontSize: 12, margin: '12px 0' }}>
+            （動画URLを入力するとここに表示されます）
+          </p>
+        )
+      }
+      return (
+        <div
+          style={{
+            position: 'relative',
+            paddingBottom: '56.25%',
+            height: 0,
+            borderRadius: 12,
+            overflow: 'hidden',
+            background: '#000',
+            boxShadow: '0 4px 24px rgba(0,0,0,0.08)',
+            margin: '16px 0',
+          }}
+        >
+          {poster && isPlayer && (
+            <img
+              src={poster}
+              alt=""
+              style={{
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+                zIndex: 0,
+              }}
+            />
+          )}
+          <iframe
+            src={src}
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              height: '100%',
+              border: 0,
+              zIndex: 1,
+            }}
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+            allowFullScreen
+          />
+        </div>
+      )
+    }
+
+    case 'image': {
+      if (!block.url.trim()) {
+        return (
+          <p style={{ color: '#94a3b8', fontSize: 12, margin: '12px 0' }}>
+            （画像URLを入力するとここに表示されます）
+          </p>
+        )
+      }
+      const img = (
+        <img
+          src={safeUrl(block.url)}
+          alt={block.alt ?? ''}
+          style={{ maxWidth: '100%', height: 'auto', borderRadius: 8 }}
+        />
+      )
+      return (
+        <div style={{ margin: '16px 0', textAlign: 'center' }}>
+          {block.href ? (
+            <a href={safeUrl(block.href)} target="_blank" rel="noopener noreferrer">
+              {img}
+            </a>
+          ) : (
+            img
+          )}
+        </div>
+      )
+    }
+
+    case 'button': {
+      const isPrimary = block.style !== 'secondary'
+      return (
+        <div style={{ margin: '24px 0', textAlign: 'center' }}>
+          <a
+            href={safeUrl(block.href || '#')}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: 'inline-block',
+              padding: '14px 28px',
+              borderRadius: 8,
+              textDecoration: 'none',
+              fontWeight: 700,
+              lineHeight: 1.2,
+              background: isPrimary ? '#06C755' : '#f1f5f9',
+              color: isPrimary ? '#fff' : '#0f172a',
+            }}
+          >
+            {block.label || '（ラベル未入力）'}
+          </a>
+        </div>
+      )
+    }
+
+    case 'divider':
+      return (
+        <hr
+          style={{
+            margin: '24px 0',
+            border: 'none',
+            borderTop: '1px solid #e2e8f0',
+          }}
+        />
+      )
+  }
 }
 
 function CountdownCell({ num, label }: { num: string; label: string }) {

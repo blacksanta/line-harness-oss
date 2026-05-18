@@ -1,4 +1,4 @@
-import type { LpPage, LpPageWritable } from '@/lib/api'
+import type { LpBlock, LpPage, LpPageWritable } from '@/lib/api'
 
 export type AccessWindowMode = 'absolute' | 'relative' | 'both' | 'none'
 
@@ -6,8 +6,7 @@ export interface LpFormState {
   name: string
   slug: string
   lineAccountId: string
-  videoUrl: string
-  body: string
+  blocks: LpBlock[]
   accessWindowMode: AccessWindowMode
   absoluteStartsAt: string
   absoluteEndsAt: string
@@ -22,8 +21,7 @@ export function emptyFormState(): LpFormState {
     name: '',
     slug: '',
     lineAccountId: '',
-    videoUrl: '',
-    body: '',
+    blocks: [],
     accessWindowMode: 'none',
     absoluteStartsAt: '',
     absoluteEndsAt: '',
@@ -55,8 +53,7 @@ export function lpToFormState(lp: LpPage): LpFormState {
     name: lp.name,
     slug: lp.slug,
     lineAccountId: lp.lineAccountId ?? '',
-    videoUrl: lp.videoUrl ?? '',
-    body: lp.body ?? '',
+    blocks: ensureBlockIds(lp.blocks ?? []),
     accessWindowMode: lp.accessWindowMode,
     absoluteStartsAt: isoToDatetimeLocalJst(lp.absoluteStartsAt),
     absoluteEndsAt: isoToDatetimeLocalJst(lp.absoluteEndsAt),
@@ -68,13 +65,15 @@ export function lpToFormState(lp: LpPage): LpFormState {
   }
 }
 
+function ensureBlockIds(blocks: LpBlock[]): LpBlock[] {
+  return blocks.map((b) => (b.id ? b : { ...b, id: crypto.randomUUID() }))
+}
+
 export function formToApiPayload(form: LpFormState): LpPageWritable {
   const useAbsolute = form.accessWindowMode === 'absolute' || form.accessWindowMode === 'both'
   const useRelative = form.accessWindowMode === 'relative' || form.accessWindowMode === 'both'
 
   const trimmedSlug = form.slug.trim()
-  const trimmedVideo = form.videoUrl.trim()
-  const trimmedBody = form.body
   const trimmedAccount = form.lineAccountId.trim()
   const trimmedNotFriend = form.notFriendRedirectUrl.trim()
 
@@ -82,8 +81,7 @@ export function formToApiPayload(form: LpFormState): LpPageWritable {
     name: form.name.trim(),
     ...(trimmedSlug ? { slug: trimmedSlug } : {}),
     lineAccountId: trimmedAccount === '' ? null : trimmedAccount,
-    videoUrl: trimmedVideo === '' ? null : trimmedVideo,
-    body: trimmedBody.trim() === '' ? null : trimmedBody,
+    blocks: form.blocks,
     accessWindowMode: form.accessWindowMode,
     absoluteStartsAt: useAbsolute ? datetimeLocalJstToIso(form.absoluteStartsAt) : null,
     absoluteEndsAt: useAbsolute ? datetimeLocalJstToIso(form.absoluteEndsAt) : null,
@@ -100,9 +98,15 @@ export function formToApiPayload(form: LpFormState): LpPageWritable {
 export function validateForm(form: LpFormState): string | null {
   if (!form.name.trim()) return '名前を入力してください'
   if (!form.expiredRedirectUrl.trim()) return '期限切れリダイレクトURLを入力してください'
-  const hasVideo = form.videoUrl.trim() !== ''
-  const hasBody = form.body.trim() !== ''
-  if (!hasVideo && !hasBody) return '動画URLまたは本文のどちらかを入力してください'
+  if (form.blocks.length === 0) return '少なくとも1つのブロックを追加してください'
+  for (const b of form.blocks) {
+    if (b.type === 'video' && !b.url.trim()) return '動画ブロックのURLを入力してください'
+    if (b.type === 'image' && !b.url.trim()) return '画像ブロックのURLを入力してください'
+    if (b.type === 'button') {
+      if (!b.label.trim()) return 'ボタンのラベルを入力してください'
+      if (!b.href.trim()) return 'ボタンのリンク先URLを入力してください'
+    }
+  }
   if (form.accessWindowMode === 'relative' || form.accessWindowMode === 'both') {
     if (!form.relativeDaysAfterFriendAdd || Number(form.relativeDaysAfterFriendAdd) <= 0) {
       return '友だち登録からの日数を1以上で入力してください'

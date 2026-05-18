@@ -633,6 +633,7 @@ CREATE TABLE IF NOT EXISTS lp_pages (
 
   video_url                       TEXT,
   body                            TEXT,
+  blocks                          TEXT,
 
   access_window_mode              TEXT NOT NULL CHECK (access_window_mode IN ('absolute', 'relative', 'both', 'none')) DEFAULT 'none',
   absolute_starts_at              TEXT,

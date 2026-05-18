@@ -2,6 +2,7 @@
 
 import type { LineAccount } from '@line-crm/shared'
 import type { LpFormState, AccessWindowMode } from './lp-form-state'
+import { BlockEditor } from './block-editor'
 
 interface Props {
   form: LpFormState
@@ -81,29 +82,10 @@ export default function LpForm({ form, onChange, accounts, mode }: Props) {
 
       {/* コンテンツ */}
       <section className="bg-white border border-gray-200 rounded-lg p-4 space-y-4">
-        <h2 className="text-sm font-semibold text-gray-800">コンテンツ <span className="text-xs font-normal text-gray-500">（動画URL・本文の少なくとも一方が必要）</span></h2>
-
-        <div>
-          <label className={labelBase}>動画URL（YouTube / Vimeo / 直リンク）</label>
-          <input
-            type="url"
-            value={form.videoUrl}
-            onChange={(e) => onChange({ videoUrl: e.target.value })}
-            placeholder="https://www.youtube.com/watch?v=..."
-            className={inputBase}
-          />
-        </div>
-
-        <div>
-          <label className={labelBase}>Markdown本文</label>
-          <textarea
-            value={form.body}
-            onChange={(e) => onChange({ body: e.target.value })}
-            rows={10}
-            placeholder={'# タイトル\n\n本文をMarkdownで記述できます。\n\n- リスト項目\n- [リンク](https://example.com)'}
-            className={`${inputBase} font-mono leading-relaxed`}
-          />
-        </div>
+        <h2 className="text-sm font-semibold text-gray-800">
+          コンテンツ <span className="text-xs font-normal text-gray-500">（ブロックを追加して任意の順に並べ替えできます）</span>
+        </h2>
+        <BlockEditor blocks={form.blocks} onChange={(blocks) => onChange({ blocks })} />
       </section>
 
       {/* 視聴期限 */}
