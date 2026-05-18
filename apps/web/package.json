@@ -12,6 +12,8 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@line-crm/shared": "workspace:*",
+    "dompurify": "^3.2.0",
+    "marked": "^15.0.0",
     "next": "^15.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

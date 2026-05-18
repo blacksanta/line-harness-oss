@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { api, type LpPage, type LpView } from '@/lib/api'
 import Header from '@/components/layout/header'
 import { summarizeBlocks } from '@/lib/lp-blocks'
@@ -40,6 +40,7 @@ function describeWindow(lp: LpPage): string {
 }
 
 export default function LpPagesPage() {
+  const router = useRouter()
   const [items, setItems] = useState<LpPage[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -106,18 +107,18 @@ export default function LpPagesPage() {
 
   return (
     <div>
-      <Header title="ランディングページ" />
-
-      <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-900">
-        <p className="font-semibold mb-1">📝 新規作成は Claude Code から</p>
-        <p className="text-xs leading-relaxed">
-          MCPツール <code className="px-1 py-0.5 bg-blue-100 rounded">create_lp_page</code> で作成してください。
-          作成済みLPは <span className="font-medium">「編集」</span> から動画・テキスト・画像・ボタンなどのブロックを自由に並び替え・追加できます。
-        </p>
-        <p className="text-xs mt-2 text-blue-700">
-          例: <span className="font-mono">「友だち登録から7日間視聴できる動画LPを作って」</span>
-        </p>
-      </div>
+      <Header
+        title="ランディングページ"
+        action={
+          <button
+            onClick={() => router.push('/lp-pages/new')}
+            className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
+            style={{ backgroundColor: '#06C755' }}
+          >
+            + 新規作成
+          </button>
+        }
+      />
 
       {error && (
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</div>
@@ -127,7 +128,7 @@ export default function LpPagesPage() {
         <p className="text-gray-500 text-sm">読み込み中...</p>
       ) : items.length === 0 ? (
         <div className="p-8 bg-white border border-gray-200 rounded-lg text-center text-sm text-gray-500">
-          まだランディングページがありません。Claude Code から create_lp_page を実行してください。
+          まだランディングページがありません。「+ 新規作成」から作成してください。
         </div>
       ) : (
         <div className="overflow-x-auto bg-white border border-gray-200 rounded-lg">
@@ -175,12 +176,12 @@ export default function LpPagesPage() {
                     </button>
                   </td>
                   <td className="px-4 py-3 text-right space-x-2 text-xs whitespace-nowrap">
-                    <Link
-                      href={`/lp-pages/edit?id=${lp.id}`}
-                      className="text-blue-600 hover:underline"
+                    <button
+                      onClick={() => router.push(`/lp-pages/edit?id=${lp.id}`)}
+                      className="text-gray-700 hover:underline"
                     >
                       編集
-                    </Link>
+                    </button>
                     <button onClick={() => showViews(lp)} className="text-blue-600 hover:underline">
                       視聴ログ
                     </button>

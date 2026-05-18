@@ -557,7 +557,12 @@ export const api = {
   lpPages: {
     list: () => fetchApi<ApiResponse<LpPage[]>>('/api/lp-pages'),
     get: (id: string) => fetchApi<ApiResponse<LpPage>>(`/api/lp-pages/${id}`),
-    update: (id: string, data: Partial<LpPage>) =>
+    create: (data: LpPageWritable) =>
+      fetchApi<ApiResponse<LpPage & { publicUrl?: string }>>('/api/lp-pages', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    update: (id: string, data: Partial<LpPageWritable>) =>
       fetchApi<ApiResponse<LpPage>>(`/api/lp-pages/${id}`, {
         method: 'PUT',
         body: JSON.stringify(data),
@@ -577,6 +582,22 @@ export type LpBlock =
   | { id: string; type: 'divider' }
 
 export type LpBlockType = LpBlock['type']
+
+export interface LpPageWritable {
+  name: string
+  slug?: string
+  lineAccountId?: string | null
+  videoUrl?: string | null
+  body?: string | null
+  blocks?: LpBlock[] | null
+  accessWindowMode: 'absolute' | 'relative' | 'both' | 'none'
+  absoluteStartsAt?: string | null
+  absoluteEndsAt?: string | null
+  relativeDaysAfterFriendAdd?: number | null
+  expiredRedirectUrl: string
+  notFriendRedirectUrl?: string | null
+  isActive?: boolean
+}
 
 export interface LpPage {
   id: string
