@@ -1,9 +1,9 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { marked } from 'marked'
-import DOMPurify from 'dompurify'
 import { videoEmbedUrl, youtubeId, youtubePosterUrl, vimeoId } from '@/lib/lp-video'
+import { looksLikeHtml, sanitizeLpHtml, isContentEmpty } from '@/lib/lp-html'
 import type { LpBlock } from '@/lib/api'
 import type { LpFormState } from './lp-form-state'
 
@@ -61,8 +61,11 @@ export default function LpPreview({ form }: Props) {
     const next: Record<string, string> = {}
     for (const b of form.blocks) {
       if (b.type === 'markdown' && b.text.trim()) {
-        const raw = marked.parse(b.text, { async: false }) as string
-        next[b.id] = DOMPurify.sanitize(raw)
+        const raw = looksLikeHtml(b.text)
+          ? b.text
+          : (marked.parse(b.text, { async: false }) as string)
+        const clean = sanitizeLpHtml(raw)
+        if (!isContentEmpty(clean)) next[b.id] = clean
       }
     }
     setMarkdownHtmls(next)
@@ -100,17 +103,6 @@ export default function LpPreview({ form }: Props) {
             padding: '24px 16px',
           }}
         >
-          <h1
-            style={{
-              fontSize: 22,
-              fontWeight: 700,
-              margin: '0 0 12px',
-              color: form.name ? '#0f172a' : '#94a3b8',
-            }}
-          >
-            {form.name || '（タイトル未入力）'}
-          </h1>
-
           {!hasContent && (
             <p style={{ color: '#94a3b8', fontSize: 13, marginTop: 24 }}>
               ブロックを追加するとここに表示されます。
