@@ -19,7 +19,14 @@ export type LpBlock =
       href: string;
       style?: 'primary' | 'secondary';
     }
-  | { id: string; type: 'divider' };
+  | { id: string; type: 'divider' }
+  | {
+      id: string;
+      type: 'countdown';
+      title?: string | null;
+      showTitle?: boolean;
+      color?: string | null;
+    };
 
 export type LpBlockType = LpBlock['type'];
 
@@ -151,6 +158,13 @@ export function normalizeBlocks(blocks: unknown): LpBlock[] {
       }
       case 'divider':
         return { id, type: 'divider' };
+      case 'countdown': {
+        const title = typeof raw.title === 'string' ? raw.title : null;
+        const showTitle = typeof raw.showTitle === 'boolean' ? raw.showTitle : true;
+        const color =
+          typeof raw.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(raw.color) ? raw.color : null;
+        return { id, type: 'countdown', title, showTitle, color };
+      }
       default:
         throw new Error(`blocks[${i}].type "${String(type)}" is not supported`);
     }

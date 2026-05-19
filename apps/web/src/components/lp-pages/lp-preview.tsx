@@ -73,6 +73,7 @@ export default function LpPreview({ form }: Props) {
 
   const countdown = sampleCountdown(form)
   const hasContent = form.blocks.length > 0
+  const hasExpiry = form.accessWindowMode !== 'none'
 
   return (
     <div className="flex flex-col items-center">
@@ -110,39 +111,14 @@ export default function LpPreview({ form }: Props) {
           )}
 
           {form.blocks.map((b) => (
-            <BlockPreview key={b.id} block={b} markdownHtml={markdownHtmls[b.id]} />
+            <BlockPreview
+              key={b.id}
+              block={b}
+              markdownHtml={markdownHtmls[b.id]}
+              countdown={countdown}
+              hasExpiry={hasExpiry}
+            />
           ))}
-
-          {countdown && (
-            <div style={{ margin: '24px 0 8px', textAlign: 'center' }}>
-              <p
-                style={{
-                  fontSize: '1.05rem',
-                  fontWeight: 700,
-                  marginBottom: 12,
-                  color: '#0f172a',
-                }}
-              >
-                公開終了まであと…
-              </p>
-              <div
-                style={{
-                  display: 'flex',
-                  gap: 8,
-                  justifyContent: 'center',
-                  flexWrap: 'nowrap',
-                }}
-              >
-                {countdown.days >= 1 && <CountdownCell num={String(countdown.days)} label="日" />}
-                <CountdownCell num={pad(countdown.hours)} label="時間" />
-                <CountdownCell num={pad(countdown.minutes)} label="分" />
-                <CountdownCell num={pad(countdown.seconds)} label="秒" />
-              </div>
-              <p style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>
-                ※ プレビューはサンプル表示です
-              </p>
-            </div>
-          )}
         </div>
       </div>
 
@@ -185,7 +161,17 @@ export default function LpPreview({ form }: Props) {
   )
 }
 
-function BlockPreview({ block, markdownHtml }: { block: LpBlock; markdownHtml?: string }) {
+function BlockPreview({
+  block,
+  markdownHtml,
+  countdown,
+  hasExpiry,
+}: {
+  block: LpBlock
+  markdownHtml?: string
+  countdown: CountdownSample | null
+  hasExpiry: boolean
+}) {
   switch (block.type) {
     case 'markdown':
       if (!markdownHtml) return null
@@ -310,15 +296,71 @@ function BlockPreview({ block, markdownHtml }: { block: LpBlock; markdownHtml?: 
           }}
         />
       )
+
+    case 'countdown': {
+      if (!hasExpiry) {
+        return (
+          <p style={{ color: '#94a3b8', fontSize: 12, margin: '12px 0', textAlign: 'center' }}>
+            （LPの「視聴期限」が未設定のため、ここには何も表示されません）
+          </p>
+        )
+      }
+      if (!countdown) return null
+      const bg = block.color ?? '#E85C3A'
+      const showTitle = block.showTitle !== false
+      const title = block.title ?? '公開終了まであと…'
+      return (
+        <div style={{ margin: '24px 0 8px', textAlign: 'center' }}>
+          {showTitle && (
+            <p
+              style={{
+                fontSize: '1.05rem',
+                fontWeight: 700,
+                marginBottom: 12,
+                color: '#0f172a',
+              }}
+            >
+              {title}
+            </p>
+          )}
+          <div
+            style={{
+              display: 'flex',
+              gap: 8,
+              justifyContent: 'center',
+              flexWrap: 'nowrap',
+            }}
+          >
+            {countdown.days >= 1 && (
+              <CountdownCell num={String(countdown.days)} label="日" bg={bg} />
+            )}
+            <CountdownCell num={pad(countdown.hours)} label="時間" bg={bg} />
+            <CountdownCell num={pad(countdown.minutes)} label="分" bg={bg} />
+            <CountdownCell num={pad(countdown.seconds)} label="秒" bg={bg} />
+          </div>
+          <p style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>
+            ※ プレビューはサンプル表示です
+          </p>
+        </div>
+      )
+    }
   }
 }
 
-function CountdownCell({ num, label }: { num: string; label: string }) {
+function CountdownCell({
+  num,
+  label,
+  bg = '#E85C3A',
+}: {
+  num: string
+  label: string
+  bg?: string
+}) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <div
         style={{
-          background: '#E85C3A',
+          background: bg,
           color: '#fff',
           borderRadius: 8,
           padding: '10px 12px',

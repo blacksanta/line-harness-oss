@@ -150,5 +150,50 @@ function BlockBody({ block, onChange }: { block: LpBlock; onChange: (b: LpBlock)
 
     case 'divider':
       return <div className="text-xs text-gray-400 text-center py-2">― 区切り線 ―</div>
+
+    case 'countdown': {
+      const color = block.color ?? '#E85C3A'
+      return (
+        <div className="space-y-2">
+          <input
+            type="text"
+            value={block.title ?? ''}
+            onChange={(e) => onChange({ ...block, title: e.target.value || null })}
+            placeholder="公開終了まであと…"
+            className="w-full p-2 border border-gray-300 rounded text-sm"
+          />
+          <label className="flex items-center gap-2 text-xs text-gray-700">
+            <input
+              type="checkbox"
+              checked={block.showTitle !== false}
+              onChange={(e) => onChange({ ...block, showTitle: e.target.checked })}
+            />
+            タイトルを表示する
+          </label>
+          <div className="flex items-center gap-2 text-xs text-gray-700">
+            <span>数字セルの色</span>
+            <input
+              type="color"
+              value={color}
+              onChange={(e) => onChange({ ...block, color: e.target.value })}
+              className="h-8 w-12 border border-gray-300 rounded cursor-pointer"
+            />
+            <code className="text-gray-500">{color}</code>
+            {block.color && (
+              <button
+                type="button"
+                onClick={() => onChange({ ...block, color: null })}
+                className="text-gray-500 hover:text-gray-700 hover:underline ml-auto"
+              >
+                既定に戻す
+              </button>
+            )}
+          </div>
+          <p className="text-xs text-gray-500">
+            期限はLPの「視聴期限」設定を使用します。期限未設定だと表示されません。
+          </p>
+        </div>
+      )
+    }
   }
 }

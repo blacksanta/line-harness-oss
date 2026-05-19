@@ -580,6 +580,13 @@ export type LpBlock =
   | { id: string; type: 'image'; url: string; alt?: string | null; href?: string | null }
   | { id: string; type: 'button'; label: string; href: string; style?: 'primary' | 'secondary' }
   | { id: string; type: 'divider' }
+  | {
+      id: string
+      type: 'countdown'
+      title?: string | null
+      showTitle?: boolean
+      color?: string | null
+    }
 
 export type LpBlockType = LpBlock['type']
 

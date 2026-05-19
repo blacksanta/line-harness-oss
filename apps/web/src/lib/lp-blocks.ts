@@ -6,6 +6,7 @@ export const BLOCK_LABELS: Record<LpBlockType, string> = {
   image: '画像',
   button: 'ボタン',
   divider: '区切り線',
+  countdown: '期限カウントダウン',
 }
 
 export const BLOCK_ICONS: Record<LpBlockType, string> = {
@@ -14,6 +15,7 @@ export const BLOCK_ICONS: Record<LpBlockType, string> = {
   image: '🖼️',
   button: '🔘',
   divider: '➖',
+  countdown: '⏳',
 }
 
 export function createDefaultBlock(type: LpBlockType): LpBlock {
@@ -29,6 +31,8 @@ export function createDefaultBlock(type: LpBlockType): LpBlock {
       return { id, type, label: 'ボタン', href: '', style: 'primary' }
     case 'divider':
       return { id, type }
+    case 'countdown':
+      return { id, type, title: null, showTitle: true, color: null }
   }
 }
 
