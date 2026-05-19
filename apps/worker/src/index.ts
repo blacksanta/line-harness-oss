@@ -604,6 +604,24 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
       }
       case 'divider':
         return '<hr class="block-divider">';
+      case 'countdown': {
+        var title = typeof block.title === 'string' && block.title ? block.title : '公開終了まであと…';
+        var showTitle = block.showTitle !== false;
+        var color = typeof block.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(block.color) ? block.color : '';
+        var styleAttr = color ? ' style="background:' + color + '"' : '';
+        var titleHtml = showTitle
+          ? '<p class="countdown-title">' + escapeHtml(title) + '</p>'
+          : '';
+        return '<div class="countdown" data-countdown="1" style="display:none" aria-live="off">'
+          +   titleHtml
+          +   '<div class="countdown-grid">'
+          +     '<div class="countdown-cell" data-unit="days"><div class="countdown-num"' + styleAttr + '>0</div><div class="countdown-label">日</div></div>'
+          +     '<div class="countdown-cell" data-unit="hours"><div class="countdown-num"' + styleAttr + '>00</div><div class="countdown-label">時間</div></div>'
+          +     '<div class="countdown-cell" data-unit="minutes"><div class="countdown-num"' + styleAttr + '>00</div><div class="countdown-label">分</div></div>'
+          +     '<div class="countdown-cell" data-unit="seconds"><div class="countdown-num"' + styleAttr + '>00</div><div class="countdown-label">秒</div></div>'
+          +   '</div>'
+          + '</div>';
+      }
       default:
         return '';
     }
@@ -616,7 +634,7 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
     return arr;
   }
 
-  function render(payload, hasExpiry){
+  function render(payload){
     app.className = '';
     var html = '';
 
@@ -627,17 +645,6 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
       html += renderBlock(blocks[i], i, plyrTargets);
     }
 
-    if(hasExpiry){
-      html += '<div id="countdown" class="countdown" style="display:none" aria-live="off">'
-        +   '<p class="countdown-title">公開終了まであと…</p>'
-        +   '<div class="countdown-grid">'
-        +     '<div class="countdown-cell" data-unit="days"><div class="countdown-num">0</div><div class="countdown-label">日</div></div>'
-        +     '<div class="countdown-cell" data-unit="hours"><div class="countdown-num">00</div><div class="countdown-label">時間</div></div>'
-        +     '<div class="countdown-cell" data-unit="minutes"><div class="countdown-num">00</div><div class="countdown-label">分</div></div>'
-        +     '<div class="countdown-cell" data-unit="seconds"><div class="countdown-num">00</div><div class="countdown-label">秒</div></div>'
-        +   '</div>'
-        + '</div>';
-    }
     app.innerHTML = html;
 
     plyrTargets.forEach(function(t){
@@ -651,15 +658,24 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
 
   function startCountdown(expiresAtMs, serverNowMs, redirectUrl){
     if(expiresAtMs == null || !redirectUrl) return;
-    var container = document.getElementById('countdown');
-    if(!container) return;
+    var containers = document.querySelectorAll('[data-countdown]');
+    if(!containers.length) return;
 
     var offset = Date.now() - (serverNowMs || Date.now());
-    var dCell = container.querySelector('[data-unit="days"]');
-    var dNum  = dCell.querySelector('.countdown-num');
-    var hNum  = container.querySelector('[data-unit="hours"] .countdown-num');
-    var mNum  = container.querySelector('[data-unit="minutes"] .countdown-num');
-    var sNum  = container.querySelector('[data-unit="seconds"] .countdown-num');
+
+    var widgets = [];
+    for(var i = 0; i < containers.length; i++){
+      var c = containers[i];
+      widgets.push({
+        root: c,
+        dCell: c.querySelector('[data-unit="days"]'),
+        dNum:  c.querySelector('[data-unit="days"] .countdown-num'),
+        hNum:  c.querySelector('[data-unit="hours"] .countdown-num'),
+        mNum:  c.querySelector('[data-unit="minutes"] .countdown-num'),
+        sNum:  c.querySelector('[data-unit="seconds"] .countdown-num')
+      });
+      c.style.display = '';
+    }
 
     function pad(n){ return n < 10 ? '0' + n : String(n); }
 
@@ -669,10 +685,12 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
     function tick(){
       var remaining = expiresAtMs - (Date.now() - offset);
       if(remaining <= 0){
-        dNum.textContent = '0';
-        hNum.textContent = '00';
-        mNum.textContent = '00';
-        sNum.textContent = '00';
+        for(var w = 0; w < widgets.length; w++){
+          widgets[w].dNum.textContent = '0';
+          widgets[w].hNum.textContent = '00';
+          widgets[w].mNum.textContent = '00';
+          widgets[w].sNum.textContent = '00';
+        }
         if(!fired){
           fired = true;
           if(timerId) clearInterval(timerId);
@@ -685,18 +703,20 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
       var hours   = Math.floor((totalSec % 86400) / 3600);
       var minutes = Math.floor((totalSec % 3600) / 60);
       var seconds = totalSec % 60;
-      if(days >= 1){
-        dCell.style.display = '';
-        dNum.textContent = String(days);
-      } else {
-        dCell.style.display = 'none';
+      for(var w = 0; w < widgets.length; w++){
+        var wd = widgets[w];
+        if(days >= 1){
+          wd.dCell.style.display = '';
+          wd.dNum.textContent = String(days);
+        } else {
+          wd.dCell.style.display = 'none';
+        }
+        wd.hNum.textContent = pad(hours);
+        wd.mNum.textContent = pad(minutes);
+        wd.sNum.textContent = pad(seconds);
       }
-      hNum.textContent = pad(hours);
-      mNum.textContent = pad(minutes);
-      sNum.textContent = pad(seconds);
     }
 
-    container.style.display = '';
     tick();
     timerId = setInterval(tick, 1000);
     document.addEventListener('visibilitychange', function(){
@@ -726,7 +746,7 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
         location.replace(res.data.redirectUrl);
         return;
       }
-      render(res.data.payload, res.data.expiresAtMs != null);
+      render(res.data.payload);
       startCountdown(res.data.expiresAtMs, res.data.serverNowMs, res.data.expiredRedirectUrl);
     } catch(e){
       console.error(e);
