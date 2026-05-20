@@ -64,6 +64,14 @@ export interface CreateTagInput {
 }
 
 // ─── Scenario ───────────────────────────────────────────
+/**
+ * シナリオ配信モード:
+ * - relative: 前ステップからの相対遅延 (delayMinutes)
+ * - elapsed: 購読開始からの経過時間 (offsetDays + offsetMinutes)
+ * - absolute_time: 購読開始から N 日後の HH:MM JST (offsetDays + deliveryTime)
+ */
+export type DeliveryMode = 'relative' | 'elapsed' | 'absolute_time'
+
 export interface Scenario {
   id: string
   name: string
@@ -71,6 +79,8 @@ export interface Scenario {
   triggerType: ScenarioTriggerType
   triggerTagId: string | null
   isActive: boolean
+  /** レスポンスでは常にセット。Create で省略時は 'relative' */
+  deliveryMode?: DeliveryMode
   createdAt: string
   updatedAt: string
 }
@@ -87,7 +97,18 @@ export interface ScenarioStep {
   id: string
   scenarioId: string
   stepOrder: number
+  /** relative mode の遅延分 (他モードは 0) */
   delayMinutes: number
+  /** elapsed/absolute_time mode の購読開始からの日数 */
+  offsetDays?: number | null
+  /** elapsed mode の経過時間 (offsetDays に追加する分; 0..1439) */
+  offsetMinutes?: number | null
+  /** absolute_time mode の配信時刻 "HH:MM" JST */
+  deliveryTime?: string | null
+  /** 参照するテンプレート ID (null = 直接入力モード) */
+  templateId?: string | null
+  /** このステップ到達時に付与するタグ ID */
+  onReachTagId?: string | null
   messageType: MessageType
   messageContent: string
   conditionType: string | null
@@ -102,16 +123,29 @@ export interface CreateScenarioInput {
   triggerType: ScenarioTriggerType
   triggerTagId?: string
   isActive?: boolean
+  /** 省略時は 'relative'（既存挙動） */
+  deliveryMode?: DeliveryMode
 }
 
 export interface CreateStepInput {
   stepOrder: number
-  delayMinutes: number
+  /** relative mode 用 (他モードでは省略) */
+  delayMinutes?: number
+  /** elapsed / absolute_time mode 用 */
+  offsetDays?: number
+  /** elapsed mode 用 (0..1439) */
+  offsetMinutes?: number
+  /** absolute_time mode 用 ("HH:MM" JST) */
+  deliveryTime?: string
   messageType: MessageType
   messageContent: string
   conditionType?: string | null
   conditionValue?: string | null
   nextStepOnFalse?: number | null
+  /** 参照するテンプレート ID (省略時は messageContent を直接使う) */
+  templateId?: string | null
+  /** このステップ到達時に付与するタグ ID */
+  onReachTagId?: string | null
 }
 
 export interface UpdateScenarioInput {
@@ -125,11 +159,45 @@ export interface UpdateScenarioInput {
 export interface UpdateStepInput {
   stepOrder?: number
   delayMinutes?: number
+  offsetDays?: number
+  offsetMinutes?: number
+  deliveryTime?: string
   messageType?: MessageType
   messageContent?: string
   conditionType?: string | null
   conditionValue?: string | null
   nextStepOnFalse?: number | null
+  templateId?: string | null
+  onReachTagId?: string | null
+}
+
+/** シナリオ到達率ダッシュボード */
+export interface ScenarioStats {
+  enrolledTotal: number
+  activeNow: number
+  completed: number
+  paused: number
+  steps: Array<{
+    stepOrder: number
+    reachedCount: number
+    /** 0..1 */
+    reachRate: number
+  }>
+}
+
+/** テンプレ使用箇所一覧 */
+export interface TemplateUsages {
+  autoReplies: Array<{
+    id: string
+    keyword: string
+    lineAccountId: string | null
+  }>
+  scenarioSteps: Array<{
+    scenarioId: string
+    scenarioName: string
+    stepId: string
+    stepOrder: number
+  }>
 }
 
 export interface FriendScenarioEnrollment {
@@ -259,6 +327,9 @@ export interface TrackedLink {
   rewardTemplateId: string | null
   isActive: boolean
   clickCount: number
+  ogTitle: string | null
+  ogDescription: string | null
+  ogImageUrl: string | null
   createdAt: string
   updatedAt: string
 }
@@ -281,6 +352,9 @@ export interface CreateTrackedLinkInput {
   scenarioId?: string | null
   introTemplateId?: string | null
   rewardTemplateId?: string | null
+  ogTitle?: string | null
+  ogDescription?: string | null
+  ogImageUrl?: string | null
 }
 
 export interface UpdateTrackedLinkInput {
@@ -290,6 +364,9 @@ export interface UpdateTrackedLinkInput {
   introTemplateId?: string | null
   rewardTemplateId?: string | null
   isActive?: boolean
+  ogTitle?: string | null
+  ogDescription?: string | null
+  ogImageUrl?: string | null
 }
 
 // ─── Forms ──────────────────────────────────────────────
@@ -314,6 +391,9 @@ export interface Form {
   saveToMetadata: boolean
   isActive: boolean
   submitCount: number
+  ogTitle: string | null
+  ogDescription: string | null
+  ogImageUrl: string | null
   createdAt: string
   updatedAt: string
 }
@@ -327,6 +407,9 @@ export interface CreateFormInput {
   onSubmitMessageType?: 'text' | 'flex' | null
   onSubmitMessageContent?: string | null
   saveToMetadata?: boolean
+  ogTitle?: string | null
+  ogDescription?: string | null
+  ogImageUrl?: string | null
 }
 
 export interface UpdateFormInput {
@@ -339,6 +422,9 @@ export interface UpdateFormInput {
   onSubmitMessageContent?: string | null
   saveToMetadata?: boolean
   isActive?: boolean
+  ogTitle?: string | null
+  ogDescription?: string | null
+  ogImageUrl?: string | null
 }
 
 export interface FormSubmission {
@@ -347,85 +433,6 @@ export interface FormSubmission {
   friendId: string | null
   data: Record<string, unknown>
   createdAt: string
-}
-
-// ─── LP Pages（視聴期限付きランディングページ） ─────────────
-export type LpAccessWindowMode = 'absolute' | 'relative' | 'both' | 'none'
-export type LpAccessReason = 'expired' | 'not_yet' | 'not_friend' | 'inactive'
-
-export type LpBlock =
-  | { id: string; type: 'video'; url: string; caption?: string | null }
-  | { id: string; type: 'markdown'; text: string }
-  | { id: string; type: 'image'; url: string; alt?: string | null; href?: string | null }
-  | { id: string; type: 'button'; label: string; href: string; style?: 'primary' | 'secondary' }
-  | { id: string; type: 'divider' }
-
-export type LpBlockType = LpBlock['type']
-
-export interface LpPage {
-  id: string
-  lineAccountId: string | null
-  name: string
-  slug: string
-  videoUrl: string | null
-  body: string | null
-  blocks: LpBlock[]
-  accessWindowMode: LpAccessWindowMode
-  absoluteStartsAt: string | null
-  absoluteEndsAt: string | null
-  relativeDaysAfterFriendAdd: number | null
-  expiredRedirectUrl: string
-  notFriendRedirectUrl: string | null
-  isActive: boolean
-  viewCount: number
-  createdAt: string
-  updatedAt: string
-  publicUrl?: string  // POST /api/lp-pages のレスポンスのみに含まれる
-}
-
-export interface CreateLpPageInput {
-  name: string
-  slug?: string
-  videoUrl?: string | null
-  body?: string | null
-  blocks?: LpBlock[] | null
-  accessWindowMode: LpAccessWindowMode
-  absoluteStartsAt?: string | null
-  absoluteEndsAt?: string | null
-  relativeDaysAfterFriendAdd?: number | null
-  expiredRedirectUrl: string
-  notFriendRedirectUrl?: string | null
-  lineAccountId?: string | null
-  isActive?: boolean
-}
-
-export interface UpdateLpPageInput {
-  name?: string
-  slug?: string
-  videoUrl?: string | null
-  body?: string | null
-  blocks?: LpBlock[] | null
-  accessWindowMode?: LpAccessWindowMode
-  absoluteStartsAt?: string | null
-  absoluteEndsAt?: string | null
-  relativeDaysAfterFriendAdd?: number | null
-  expiredRedirectUrl?: string
-  notFriendRedirectUrl?: string | null
-  lineAccountId?: string | null
-  isActive?: boolean
-}
-
-export interface LpView {
-  id: string
-  lp_page_id: string
-  friend_id: string | null
-  line_user_id: string | null
-  viewed_at: string
-  user_agent: string | null
-  referrer: string | null
-  access_result: 'allowed' | 'expired' | 'not_yet' | 'not_friend' | 'inactive'
-  reason: string | null
-  friend_name: string | null
 }
 
 // ─── Auto-Replies ──────────────────────────────────────
@@ -603,4 +610,83 @@ export interface GetConversationParams {
   friendId: string
   limit?: number
   before?: string
+}
+
+// ─── LP Pages（視聴期限付きランディングページ） ─────────────
+export type LpAccessWindowMode = 'absolute' | 'relative' | 'both' | 'none'
+export type LpAccessReason = 'expired' | 'not_yet' | 'not_friend' | 'inactive'
+
+export type LpBlock =
+  | { id: string; type: 'video'; url: string; caption?: string | null }
+  | { id: string; type: 'markdown'; text: string }
+  | { id: string; type: 'image'; url: string; alt?: string | null; href?: string | null }
+  | { id: string; type: 'button'; label: string; href: string; style?: 'primary' | 'secondary' }
+  | { id: string; type: 'divider' }
+
+export type LpBlockType = LpBlock['type']
+
+export interface LpPage {
+  id: string
+  lineAccountId: string | null
+  name: string
+  slug: string
+  videoUrl: string | null
+  body: string | null
+  blocks: LpBlock[]
+  accessWindowMode: LpAccessWindowMode
+  absoluteStartsAt: string | null
+  absoluteEndsAt: string | null
+  relativeDaysAfterFriendAdd: number | null
+  expiredRedirectUrl: string
+  notFriendRedirectUrl: string | null
+  isActive: boolean
+  viewCount: number
+  createdAt: string
+  updatedAt: string
+  publicUrl?: string
+}
+
+export interface CreateLpPageInput {
+  name: string
+  slug?: string
+  videoUrl?: string | null
+  body?: string | null
+  blocks?: LpBlock[] | null
+  accessWindowMode: LpAccessWindowMode
+  absoluteStartsAt?: string | null
+  absoluteEndsAt?: string | null
+  relativeDaysAfterFriendAdd?: number | null
+  expiredRedirectUrl: string
+  notFriendRedirectUrl?: string | null
+  lineAccountId?: string | null
+  isActive?: boolean
+}
+
+export interface UpdateLpPageInput {
+  name?: string
+  slug?: string
+  videoUrl?: string | null
+  body?: string | null
+  blocks?: LpBlock[] | null
+  accessWindowMode?: LpAccessWindowMode
+  absoluteStartsAt?: string | null
+  absoluteEndsAt?: string | null
+  relativeDaysAfterFriendAdd?: number | null
+  expiredRedirectUrl?: string
+  notFriendRedirectUrl?: string | null
+  lineAccountId?: string | null
+  isActive?: boolean
+}
+
+export interface LpView {
+  id: string
+  lp_page_id: string
+  friend_id: string | null
+  line_user_id: string | null
+  viewed_at: string
+  user_agent: string | null
+  referrer: string | null
+  access_result: 'allowed' | 'expired' | 'not_yet' | 'not_friend' | 'inactive'
+  reason: string | null
+  friend_name: string | null
 }

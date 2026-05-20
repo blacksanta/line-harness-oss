@@ -1,13 +1,27 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { LineClient } from '@line-crm/line-sdk';
-import { getLineAccounts, getTrafficPoolBySlug, getRandomPoolAccount, getPoolAccounts } from '@line-crm/db';
+import {
+  getLineAccounts,
+  getTrafficPoolBySlug,
+  getTrafficPoolById,
+  getRandomPoolAccount,
+  getPoolAccounts,
+  getEntryRouteByRefCode,
+} from '@line-crm/db';
 import { processStepDeliveries } from './services/step-delivery.js';
 import { processScheduledBroadcasts, processQueuedBroadcasts } from './services/broadcast.js';
 import { processReminderDeliveries } from './services/reminder-delivery.js';
 import { checkAccountHealth } from './services/ban-monitor.js';
 import { refreshLineAccessTokens } from './services/token-refresh.js';
 import { processInsightFetch } from './services/insight-fetcher.js';
+import { processDueReminders } from './services/booking-reminders.js';
+import { runExpirer } from './services/booking-expirer.js';
+import { processDueEventReminders } from './services/event-booking-reminders.js';
+import { runEventBookingExpirer } from './services/event-booking-expirer.js';
+import { sendEventBookingNotification } from './services/event-booking-notifier.js';
+import { sendBookingNotification } from './services/booking-notifier.js';
+import { DEFAULT_ACCOUNT_SETTINGS } from './services/booking-types.js';
 import { authMiddleware } from './middleware/auth.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
 import { webhook } from './routes/webhook.js';
@@ -19,6 +33,9 @@ import { users } from './routes/users.js';
 import { lineAccounts } from './routes/line-accounts.js';
 import { conversions } from './routes/conversions.js';
 import { affiliates } from './routes/affiliates.js';
+import { duplicates } from './routes/duplicates.js';
+import { usersGrouped } from './routes/users-grouped.js';
+import { inbox } from './routes/inbox.js';
 import { openapi } from './routes/openapi.js';
 import { liffRoutes } from './routes/liff.js';
 // Round 3 ルート
@@ -29,12 +46,15 @@ import { scoring } from './routes/scoring.js';
 import { templates } from './routes/templates.js';
 import { chats } from './routes/chats.js';
 import { conversations } from './routes/conversations.js';
-import { notifications } from './routes/notifications.js';
+// notifications ルート (notification_rules CRUD + notifications 一覧) は
+// インボックス機能 (/api/inbox/unanswered) に置き換えたため削除。
+// DB テーブル notification_rules / notifications は archive 目的で残してある。
 import { stripe } from './routes/stripe.js';
 import { health } from './routes/health.js';
 import { automations } from './routes/automations.js';
 import { richMenus } from './routes/rich-menus.js';
 import { trackedLinks } from './routes/tracked-links.js';
+import { entryRoutes } from './routes/entry-routes.js';
 import { forms } from './routes/forms.js';
 import { adPlatforms } from './routes/ad-platforms.js';
 import { staff } from './routes/staff.js';
@@ -43,11 +63,23 @@ import { images } from './routes/images.js';
 import { accountSettings } from './routes/account-settings.js';
 import { setup } from './routes/setup.js';
 import { autoReplies } from './routes/auto-replies.js';
+import booking from './routes/booking.js';
+import events from './routes/events.js';
 import { trafficPools } from './routes/traffic-pools.js';
 import { meetCallback } from './routes/meet-callback.js';
 import { messageTemplates } from './routes/message-templates.js';
 import { lpPages } from './routes/lp-pages.js';
 import { getLpPageBySlug, getLineAccountById } from '@line-crm/db';
+import dedupPreview from './routes/dedup-preview.js';
+import { profileRefresh } from './routes/profile-refresh.js';
+import { richMenuGroups } from './routes/rich-menu-groups.js';
+import { isLinkPreviewBot } from './lib/og-bot.js';
+import { buildOgHtml } from './lib/og-html.js';
+import {
+  resolveOgForEvent,
+  resolveOgForForm,
+  resolveOgForAccount,
+} from './lib/og-resolver.js';
 
 export type Env = {
   Bindings: {
@@ -93,6 +125,9 @@ app.route('/', users);
 app.route('/', lineAccounts);
 app.route('/', conversions);
 app.route('/', affiliates);
+app.route('/', duplicates);
+app.route('/', usersGrouped);
+app.route('/', inbox);
 app.route('/', openapi);
 app.route('/', liffRoutes);
 
@@ -104,12 +139,12 @@ app.route('/', scoring);
 app.route('/', templates);
 app.route('/', chats);
 app.route('/', conversations);
-app.route('/', notifications);
 app.route('/', stripe);
 app.route('/', health);
 app.route('/', automations);
 app.route('/', richMenus);
 app.route('/', trackedLinks);
+app.route('/', entryRoutes);
 app.route('/', forms);
 app.route('/', adPlatforms);
 app.route('/', staff);
@@ -118,10 +153,15 @@ app.route('/', images);
 app.route('/', setup);
 app.route('/', autoReplies);
 app.route('/', trafficPools);
+app.route('/', booking);
+app.route('/', events);
 app.route('/', accountSettings);
 app.route('/', meetCallback);
 app.route('/', messageTemplates);
 app.route('/', lpPages);
+app.route('/', dedupPreview);
+app.route('/', profileRefresh);
+app.route('/', richMenuGroups);
 
 // Self-hosted QR code proxy — prevents leaking ref tokens to third-party services
 app.get('/api/qr', async (c) => {
@@ -148,10 +188,35 @@ app.get('/r/:ref', async (c) => {
   const ref = c.req.param('ref');
   const formId = c.req.query('form') || '';
 
-  // Resolve LIFF URL from pool (same logic as /auth/line)
+  // Resolve LIFF URL — priority:
+  //   1. entry_route.pool_id (if ref maps to a referral link)
+  //   2. URL query ?pool=
+  //   3. 'main' fallback
   let liffUrl = c.env.LIFF_URL;
-  const poolSlug = c.req.query('pool') || 'main';
-  const pool = await getTrafficPoolBySlug(c.env.DB, poolSlug);
+  let pool: Awaited<ReturnType<typeof getTrafficPoolBySlug>> | null = null;
+
+  // 1. entry_route lookup. getTrafficPoolById (unlike getTrafficPoolBySlug)
+  // does not filter on is_active, so we ignore disabled pools explicitly to
+  // honor the operator's pause action.
+  //
+  // NOTE: we intentionally do NOT record a ref_tracking row here. The
+  // /auth/callback + /api/liff/link path already writes a tracking row when
+  // OAuth/LIFF completes, and writing a second landing-page row would
+  // double-count every successful click in getEntryRouteFunnel. Landing-page
+  // drop-off (clicks that never reach OAuth) is therefore not visible in the
+  // funnel; that limitation is intentional pending a dedicated click table.
+  const route = await getEntryRouteByRefCode(c.env.DB, ref);
+  if (route?.pool_id) {
+    const candidate = await getTrafficPoolById(c.env.DB, route.pool_id);
+    if (candidate?.is_active) pool = candidate;
+  }
+
+  // 2 / 3. fallback to URL query or 'main'
+  if (!pool) {
+    const poolSlug = c.req.query('pool') || 'main';
+    pool = await getTrafficPoolBySlug(c.env.DB, poolSlug);
+  }
+
   if (pool) {
     const account = await getRandomPoolAccount(c.env.DB, pool.id);
     if (account) {
@@ -176,6 +241,17 @@ app.get('/r/:ref', async (c) => {
   if (xh) liffParams.set('xh', xh);
   const ig = c.req.query('ig');
   if (ig) liffParams.set('ig', ig);
+  // LIFF in-app navigation passthrough — OpenChat strips raw liff.line.me
+  // URLs, so we accept `page` / `id` here and forward them to the resolved
+  // LIFF target. Limited to pages whose client initializer enforces the
+  // friend-add gate (initSalonBooking, initEventBooking); page=book/form
+  // would bypass that gate and bypass ref-based attribution, so they are
+  // intentionally excluded until those initializers are unified.
+  const PAGE_PASSTHROUGH_ALLOWED = new Set(['salon-book', 'event', 'event-me']);
+  const page = c.req.query('page');
+  if (page && PAGE_PASSTHROUGH_ALLOWED.has(page)) liffParams.set('page', page);
+  const id = c.req.query('id');
+  if (id) liffParams.set('id', id);
   const liffTarget = liffParams.toString() ? `${liffUrl}?${liffParams.toString()}` : liffUrl;
 
   // Help link carries the *resolved* liff target as `t=` so the help page
@@ -437,6 +513,110 @@ ${longPressBlock}
 </html>`);
 });
 
+// /o — `/r/:ref` の ref 解決・追跡を一切行わない明示 liffId 版の open page。
+// admin UI が OpenChat / IG DM 等で `liff.line.me` を弾かれるチャネル向けに
+// 配布するラップ URL のためのルート。`/r/main` を使うと (a) traffic_pool の
+// ランダム pool account に再解決されて選択中アカウントから外れる、
+// (b) `ref=main` として ref_tracking / friends.ref_code に書き込まれて
+// attribution を汚染する、という 2 つの問題があるため別ルートに分けている。
+// 仕様:
+// - クエリ: liffId (必須, `<digits>-<id>` 形式) / page / id
+// - page は `/r/:ref` と同じ allowlist (salon-book / event / event-me)
+// - mobile UA は「LINEで開く」ボタン、desktop は QR を返す (`/r/:ref` 同等)
+app.get('/o', async (c) => {
+  const liffId = c.req.query('liffId') || '';
+  if (!/^[0-9]+-[A-Za-z0-9]+$/.test(liffId)) {
+    return c.text('Invalid liffId', 400);
+  }
+
+  const liffParams = new URLSearchParams();
+  liffParams.set('liffId', liffId);
+  const PAGE_PASSTHROUGH_ALLOWED = new Set(['salon-book', 'event', 'event-me']);
+  const page = c.req.query('page');
+  if (page && PAGE_PASSTHROUGH_ALLOWED.has(page)) liffParams.set('page', page);
+  const id = c.req.query('id');
+  if (id) liffParams.set('id', id);
+  const liffTarget = `https://liff.line.me/${liffId}?${liffParams.toString()}`;
+
+  const ua = (c.req.header('user-agent') || '').toLowerCase();
+  const isMobile = /iphone|ipad|android|mobile/.test(ua);
+  const isIOS = /iphone|ipad|ipod/.test(ua);
+  const isAndroid = /android/.test(ua);
+
+  if (isMobile) {
+    const liffPath = liffTarget.replace(/^https:\/\//, '');
+    const intentFallback = encodeURIComponent(liffTarget);
+    const androidIntent = `intent://${liffPath}#Intent;scheme=https;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;package=jp.naver.line.android;S.browser_fallback_url=${intentFallback};end`;
+    const buttonHref = isAndroid ? androidIntent : liffTarget;
+    const longPressHint = isIOS
+      ? '<p class="hint">※開かない場合はボタンを<strong>長押し</strong>して「LINEで開く」を選択</p>'
+      : '';
+    return c.html(`<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LINE で開く</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;background:#f5f7f5;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.card{background:#fff;border-radius:20px;box-shadow:0 2px 20px rgba(0,0,0,0.06);text-align:center;max-width:360px;width:90%;padding:40px 28px 32px;border:1px solid rgba(0,0,0,0.04)}
+.line-icon{width:48px;height:48px;margin:0 auto 20px}
+.line-icon svg{width:48px;height:48px}
+.msg{font-size:15px;color:#444;font-weight:500;margin-bottom:28px;line-height:1.6}
+.btn{display:block;width:100%;padding:16px;border:none;border-radius:12px;font-size:16px;font-weight:700;text-decoration:none;text-align:center;color:#fff;background:#06C755;box-shadow:0 2px 12px rgba(6,199,85,0.2);transition:all .15s}
+.btn:active{transform:scale(0.98);opacity:.9}
+.hint{font-size:11px;color:#888;margin-top:10px;line-height:1.6}
+.hint strong{color:#06C755;font-weight:700}
+</style>
+</head>
+<body>
+<div class="card">
+<div class="line-icon">
+<svg viewBox="0 0 48 48" fill="none"><rect width="48" height="48" rx="12" fill="#06C755"/><path d="M24 12C17.37 12 12 16.58 12 22.2c0 3.54 2.35 6.65 5.86 8.47-.2.74-.76 2.75-.87 3.17-.14.55.2.54.42.39.18-.12 2.84-1.88 4-2.65.84.13 1.7.22 2.59.22 6.63 0 12-4.58 12-10.2S30.63 12 24 12z" fill="#fff"/></svg>
+</div>
+<p class="msg">LINE で開く</p>
+<a href="${buttonHref}" class="btn">LINEで開く</a>
+${longPressHint}
+</div>
+</body>
+</html>`);
+  }
+
+  return c.html(`<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LINE で開く</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;background:#f5f7f5;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.card{background:#fff;border-radius:20px;box-shadow:0 2px 20px rgba(0,0,0,0.06);text-align:center;max-width:480px;width:90%;padding:48px;border:1px solid rgba(0,0,0,0.04)}
+.line-icon{width:48px;height:48px;margin:0 auto 20px}
+.line-icon svg{width:48px;height:48px}
+.msg{font-size:15px;color:#444;font-weight:500;margin-bottom:32px;line-height:1.6}
+.qr{background:#f9f9f9;border-radius:16px;padding:24px;display:inline-block;margin-bottom:24px;border:1px solid rgba(0,0,0,0.04)}
+.qr img{display:block;width:240px;height:240px}
+.hint{font-size:13px;color:#999;line-height:1.6}
+</style>
+</head>
+<body>
+<div class="card">
+<div class="line-icon">
+<svg viewBox="0 0 48 48" fill="none"><rect width="48" height="48" rx="12" fill="#06C755"/><path d="M24 12C17.37 12 12 16.58 12 22.2c0 3.54 2.35 6.65 5.86 8.47-.2.74-.76 2.75-.87 3.17-.14.55.2.54.42.39.18-.12 2.84-1.88 4-2.65.84.13 1.7.22 2.59.22 6.63 0 12-4.58 12-10.2S30.63 12 24 12z" fill="#fff"/></svg>
+</div>
+<p class="msg">スマートフォンで QR コードを読み取ってください</p>
+<div class="qr">
+<img src="/api/qr?size=240x240&data=${encodeURIComponent(liffTarget)}" alt="QR Code">
+</div>
+<p class="hint">LINE アプリのカメラまたは<br>スマートフォンのカメラで読み取れます</p>
+</div>
+</body>
+</html>`);
+});
+
+// Convenience redirect for /book path
 // 視聴期限付きLP（UTAGE風）— LIFFラッパHTMLを返す。コンテンツ本体は中で /api/lp-pages/:id/check-access から取りに行く。
 app.get('/lp/:slug', async (c) => {
   const slug = c.req.param('slug');
@@ -763,22 +943,127 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
   );
 });
 
-// Convenience redirect for /book path
 app.get('/book', (c) => c.redirect('/?page=book'));
+
+// URL（パス or クエリ）からイベント/フォーム等のレコードを引いて OGP HTML を組み立てる。
+// LIFF アプリの共有 URL は実際には `https://liff.line.me/<LIFF_ID>/?page=event&id=<id>`
+// 形式で、Worker に届くときは pathname が `/`、クエリに `page` `id` `liffId` が乗る。
+// 旧形式の `/events/:id` パスも残しているのでパスマッチも合わせて見る。
+async function buildOgForLiffPath(db: D1Database, url: URL): Promise<string> {
+  const pathname = url.pathname;
+  const liffIdFromQuery = url.searchParams.get('liffId');
+  const pageFromQuery = url.searchParams.get('page');
+  const idFromQuery = url.searchParams.get('id');
+  const absoluteUrl = url.toString();
+
+  const lookupAccountByLiff = async (liffId: string | null): Promise<any> => {
+    if (!liffId) return null;
+    return db
+      .prepare(`SELECT * FROM line_accounts WHERE liff_id = ?`)
+      .bind(liffId)
+      .first<any>();
+  };
+  const lookupAccountById = async (id: string | null): Promise<any> => {
+    if (!id) return null;
+    return db.prepare(`SELECT * FROM line_accounts WHERE id = ?`).bind(id).first<any>();
+  };
+
+  // event: パス `/events/:id` または クエリ `?page=event&id=`
+  let eventId: string | null = null;
+  const eventPathMatch = pathname.match(/^\/events\/([^/]+)(?:\/(?:confirm|done))?\/?$/);
+  if (eventPathMatch) eventId = eventPathMatch[1];
+  else if (pageFromQuery === 'event' && idFromQuery) eventId = idFromQuery;
+
+  if (eventId) {
+    // liffId クエリでアカウントが特定できる場合は /api/liff/events/:id と
+    // 同じ可視性条件（deleted_at IS NULL, is_published=1, target アカウント所属）
+    // で event を取得する。未公開・削除済みのイベント情報を bot プレビューに
+    // 漏らさない。liffId が無いか不一致なら、最低限の公開条件のみ適用。
+    let event: any = null;
+    let account: any = null;
+
+    if (liffIdFromQuery) {
+      account = await lookupAccountByLiff(liffIdFromQuery);
+      if (account) {
+        event = await db
+          .prepare(
+            `SELECT * FROM events
+              WHERE id = ? AND deleted_at IS NULL AND is_published = 1 AND (
+                (target_type = 'single' AND line_account_id = ?)
+                OR (target_type = 'multi-account-dedup'
+                    AND EXISTS (SELECT 1 FROM json_each(account_ids) WHERE value = ?))
+              )`,
+          )
+          .bind(eventId, account.id, account.id)
+          .first<any>();
+      }
+    }
+
+    if (!event) {
+      // liffId 指定でアカウント特定したが strict query で event が引けなかった、
+      // または liffId 無しのフォールバック。account の branding を持ち越すと
+      // event とアカウントの組み合わせが不整合になるのでリセットする。
+      account = null;
+      event = await db
+        .prepare(
+          `SELECT * FROM events WHERE id = ? AND deleted_at IS NULL AND is_published = 1`,
+        )
+        .bind(eventId)
+        .first<any>();
+      if (event && event.target_type === 'single' && event.line_account_id) {
+        // multi-account-dedup のときは line_account_id が sentinel なので
+        // branding に使わない（og:site_name は 'LINE' フォールバック）。
+        account = await lookupAccountById(event.line_account_id);
+      }
+    }
+
+    if (event) {
+      const og = resolveOgForEvent(event, account, absoluteUrl);
+      return buildOgHtml(og);
+    }
+  }
+
+  // form: クエリ `?page=form&id=`
+  if (pageFromQuery === 'form' && idFromQuery) {
+    const form = await db
+      .prepare(`SELECT * FROM forms WHERE id = ?`)
+      .bind(idFromQuery)
+      .first<any>();
+    if (form) {
+      const account = await lookupAccountByLiff(liffIdFromQuery);
+      const og = resolveOgForForm(form, account, absoluteUrl);
+      return buildOgHtml(og);
+    }
+  }
+
+  // フォールバック: アカウントデフォルトのみ
+  const account = await lookupAccountByLiff(liffIdFromQuery);
+  const og = resolveOgForAccount(account, absoluteUrl);
+  return buildOgHtml(og);
+}
 
 // 404 fallback — API paths return JSON 404, everything else serves from static assets (LIFF/admin)
 app.notFound(async (c) => {
-  const path = new URL(c.req.url).pathname;
+  const url = new URL(c.req.url);
+  const path = url.pathname;
   if (path.startsWith('/api/') || path === '/webhook' || path === '/docs' || path === '/openapi.json') {
     return c.json({ success: false, error: 'Not found' }, 404);
   }
+
+  // Bot UA (LINE/X/Facebook 等のリンクプレビュー) → OGP HTML を返す
+  const ua = c.req.header('user-agent') || '';
+  if (isLinkPreviewBot(ua)) {
+    const html = await buildOgForLiffPath(c.env.DB, url);
+    return c.html(html);
+  }
+
   // Serve static assets (admin dashboard, LIFF pages)
   return c.env.ASSETS.fetch(c.req.raw);
 });
 
 // Scheduled handler for cron triggers — runs for all active LINE accounts
 async function scheduled(
-  _event: ScheduledEvent,
+  event: ScheduledEvent,
   env: Env['Bindings'],
   _ctx: ExecutionContext,
 ): Promise<void> {
@@ -821,13 +1106,68 @@ async function scheduled(
     console.error('Insight fetch error:', e);
   }
 
-  // Cross-account duplicate detection & auto-tagging
+  // Booking reminders — every 5-minute tick scans due reminders.
   try {
-    const { processDuplicateDetection } = await import('./services/duplicate-detect.js');
-    await processDuplicateDetection(env.DB);
+    const result = await processDueReminders(env.DB, {
+      now: new Date(),
+      sender: sendBookingNotification,
+      reminderHoursBefore: DEFAULT_ACCOUNT_SETTINGS.reminder_hours_before,
+    });
+    if (result.sent + result.failed > 0) {
+      console.log(`[booking-reminders] sent=${result.sent} failed=${result.failed}`);
+    }
   } catch (e) {
-    console.error('Duplicate detection error:', e);
+    console.error('booking-reminders error:', e);
   }
+
+  // Booking expirer — runs only on the 6h cron tick.
+  if (event.cron === '0 */6 * * *') {
+    try {
+      const result = await runExpirer(env.DB, {
+        now: new Date(),
+        sender: sendBookingNotification,
+      });
+      console.log(
+        `[booking-expirer] expired=${result.expired} idempotency_purged=${result.idempotencyPurged}`,
+      );
+    } catch (e) {
+      console.error('booking-expirer error:', e);
+    }
+  }
+
+  // Event-booking reminders — every 5-minute tick scans due reminders.
+  try {
+    const result = await processDueEventReminders(env.DB, {
+      now: new Date(),
+      sender: sendEventBookingNotification,
+    });
+    if (result.sent + result.failed > 0) {
+      console.log(`[event-booking-reminders] sent=${result.sent} failed=${result.failed}`);
+    }
+  } catch (e) {
+    console.error('event-booking-reminders error:', e);
+  }
+
+  // Event-booking expirer — 6h cron tick.
+  if (event.cron === '0 */6 * * *') {
+    try {
+      const result = await runEventBookingExpirer(env.DB, { now: new Date() });
+      console.log(
+        `[event-booking-expirer] expired=${result.expired} idempotency_purged=${result.idempotencyPurged}`,
+      );
+    } catch (e) {
+      console.error('event-booking-expirer error:', e);
+    }
+  }
+
+  // Cross-account duplicate detection — disabled.
+  // The cron used to materialize duplicates into the tag system but the 1k-subrequest
+  // budget can't drain a 1k+ candidate backlog, and a live SELECT against
+  // friends.picture_url / display_name / status_message gives the same answer
+  // on demand. Replacement: a /api/duplicates endpoint plus a dashboard view
+  // (planned alongside the multi-provider UI work). Keeping the service file
+  // (apps/worker/src/services/duplicate-detect.ts) and the existing
+  // `重複:` tag rows untouched until that replacement lands.
 }
 
 export default {

@@ -18,6 +18,9 @@ export interface Form {
   save_to_metadata: number;
   is_active: number;
   submit_count: number;
+  og_title: string | null;
+  og_description: string | null;
+  og_image_url: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -39,6 +42,64 @@ export async function getForms(db: D1Database): Promise<Form[]> {
   return result.results;
 }
 
+export interface FormUsedByAccount {
+  id: string;
+  name: string;
+  country: string | null;
+  displayOrder: number;
+  count: number;
+}
+
+export interface FormWithStats extends Form {
+  last_submitted_at: string | null;
+  used_by_accounts: FormUsedByAccount[];
+}
+
+export async function getFormsWithStats(db: D1Database): Promise<FormWithStats[]> {
+  // Single query: forms + last submission + per-account submission counts.
+  // json_group_array returns '[]' (not NULL) when subquery yields no rows.
+  const result = await db
+    .prepare(
+      `SELECT
+         f.*,
+         (SELECT MAX(created_at) FROM form_submissions WHERE form_id = f.id) AS last_submitted_at,
+         (SELECT json_group_array(
+                   json_object(
+                     'id', la.id,
+                     'name', la.name,
+                     'country', la.country,
+                     'displayOrder', la.display_order,
+                     'count', sub.cnt
+                   )
+                 )
+            FROM (
+              SELECT fr.line_account_id, COUNT(*) AS cnt
+              FROM form_submissions fs
+              JOIN friends fr ON fr.id = fs.friend_id
+              WHERE fs.form_id = f.id AND fr.line_account_id IS NOT NULL
+              GROUP BY fr.line_account_id
+            ) sub
+            JOIN line_accounts la ON la.id = sub.line_account_id) AS used_by_accounts_json
+       FROM forms f
+       ORDER BY f.created_at DESC`,
+    )
+    .all<Form & { last_submitted_at: string | null; used_by_accounts_json: string | null }>();
+
+  return result.results.map((row) => {
+    const { used_by_accounts_json, ...rest } = row;
+    let parsed: FormUsedByAccount[] = [];
+    if (used_by_accounts_json) {
+      try {
+        const arr = JSON.parse(used_by_accounts_json) as FormUsedByAccount[];
+        parsed = arr.sort((a, b) => a.displayOrder - b.displayOrder);
+      } catch {
+        parsed = [];
+      }
+    }
+    return { ...rest, used_by_accounts: parsed };
+  });
+}
+
 export async function getFormById(db: D1Database, id: string): Promise<Form | null> {
   return db
     .prepare(`SELECT * FROM forms WHERE id = ?`)
@@ -58,6 +119,9 @@ export interface CreateFormInput {
   onSubmitWebhookHeaders?: string | null;
   onSubmitWebhookFailMessage?: string | null;
   saveToMetadata?: boolean;
+  ogTitle?: string | null;
+  ogDescription?: string | null;
+  ogImageUrl?: string | null;
 }
 
 export async function createForm(db: D1Database, input: CreateFormInput): Promise<Form> {
@@ -70,8 +134,10 @@ export async function createForm(db: D1Database, input: CreateFormInput): Promis
          (id, name, description, fields, on_submit_tag_id, on_submit_scenario_id,
           on_submit_message_type, on_submit_message_content,
           on_submit_webhook_url, on_submit_webhook_headers, on_submit_webhook_fail_message,
-          save_to_metadata, is_active, submit_count, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)`,
+          save_to_metadata, is_active, submit_count,
+          og_title, og_description, og_image_url,
+          created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -86,6 +152,9 @@ export async function createForm(db: D1Database, input: CreateFormInput): Promis
       input.onSubmitWebhookHeaders ?? null,
       input.onSubmitWebhookFailMessage ?? null,
       input.saveToMetadata !== false ? 1 : 0,
+      input.ogTitle ?? null,
+      input.ogDescription ?? null,
+      input.ogImageUrl ?? null,
       now,
       now,
     )
@@ -107,6 +176,9 @@ export interface UpdateFormInput {
   onSubmitWebhookFailMessage?: string | null;
   saveToMetadata?: boolean;
   isActive?: boolean;
+  ogTitle?: string | null;
+  ogDescription?: string | null;
+  ogImageUrl?: string | null;
 }
 
 export async function updateForm(
@@ -134,6 +206,9 @@ export async function updateForm(
            on_submit_webhook_fail_message = ?,
            save_to_metadata = ?,
            is_active = ?,
+           og_title = ?,
+           og_description = ?,
+           og_image_url = ?,
            updated_at = ?
        WHERE id = ?`,
     )
@@ -164,6 +239,9 @@ export async function updateForm(
         ? (input.saveToMetadata !== false ? 1 : 0)
         : existing.save_to_metadata,
       'isActive' in input ? (input.isActive ? 1 : 0) : existing.is_active,
+      'ogTitle' in input ? (input.ogTitle ?? null) : existing.og_title,
+      'ogDescription' in input ? (input.ogDescription ?? null) : existing.og_description,
+      'ogImageUrl' in input ? (input.ogImageUrl ?? null) : existing.og_image_url,
       now,
       id,
     )

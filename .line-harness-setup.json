@@ -1,0 +1,28 @@
+{
+  "completedSteps": [
+    "r2billing",
+    "credentials",
+    "liffId",
+    "database",
+    "r2",
+    "worker",
+    "secrets",
+    "lineAccount",
+    "admin"
+  ],
+  "accountId": "fe67ee32ff09d65511ba69bfd049bef5",
+  "projectName": "line-harness",
+  "lineChannelId": "2009591335",
+  "lineChannelAccessToken": "vcRSN1xeOxWH1F10bRDR35C/qPlo7zj+Ym9y265mp7GJihsmUtVMXWg2RMJ/F2ZFgN8KWzVvP0ER0pCsYSRM2/Bg8o5SExJyZTbbH0hfGHCw6DzjP3xVw4ZWdrqds2IxkUNlMkqxYGRQTtdtgT8J5wdB04t89/1O/w1cDnyilFU=",
+  "lineChannelSecret": "2f3f197ad840ad436d91882746057b31",
+  "lineLoginChannelId": "2009591417",
+  "liffId": "2009591417-cNMUKb3E",
+  "apiKey": "134f68c967a698f59487294b45bc693ef173737033a73fe3efb5226b9ade8e9e",
+  "d1DatabaseId": "0a68f5ef-7ece-4b9a-9837-c3a8e87d9f6f",
+  "d1DatabaseName": "line-harness",
+  "r2BucketName": "line-harness-images",
+  "botBasicId": "@505svjog",
+  "workerName": "line-harness",
+  "workerUrl": "https://line-harness.kei-01261026.workers.dev",
+  "adminUrl": "https://line-harness-admin-134f68c9.pages.dev"
+}
