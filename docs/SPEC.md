@@ -99,7 +99,7 @@ line-oss-crm/
 3. `cp .env.example .env` → fill LINE credentials
 4. `pnpm install`
 5. `npx wrangler d1 create line-crm` → update wrangler.toml
-6. `npx wrangler d1 execute line-crm --file=packages/db/schema.sql`
+6. `npx wrangler d1 execute your-database --file=packages/db/schema.sql`
 7. `npx wrangler deploy` (Workers)
 8. `vercel deploy` (Admin UI)
 9. Set webhook URL in LINE console

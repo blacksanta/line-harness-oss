@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import {
   getForms,
+  getFormsWithStats,
   getFormById,
   createForm,
   updateForm,
@@ -11,12 +12,19 @@ import {
 } from '@line-crm/db';
 import { getFriendByLineUserId, getFriendById } from '@line-crm/db';
 import { addTagToFriend, enrollFriendInScenario } from '@line-crm/db';
-import type { Form as DbForm, FormSubmission as DbFormSubmission } from '@line-crm/db';
+import type {
+  Form as DbForm,
+  FormSubmission as DbFormSubmission,
+  FormUsedByAccount,
+} from '@line-crm/db';
 import type { Env } from '../index.js';
 
 const forms = new Hono<Env>();
 
-function serializeForm(row: DbForm) {
+function serializeForm(
+  row: DbForm,
+  extra?: { lastSubmittedAt?: string | null; usedByAccounts?: FormUsedByAccount[] },
+) {
   return {
     id: row.id,
     name: row.name,
@@ -32,8 +40,13 @@ function serializeForm(row: DbForm) {
     saveToMetadata: Boolean(row.save_to_metadata),
     isActive: Boolean(row.is_active),
     submitCount: row.submit_count,
+    ogTitle: row.og_title,
+    ogDescription: row.og_description,
+    ogImageUrl: row.og_image_url,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    lastSubmittedAt: extra?.lastSubmittedAt ?? null,
+    usedByAccounts: extra?.usedByAccounts ?? [],
   };
 }
 
@@ -48,11 +61,19 @@ function serializeSubmission(row: DbFormSubmission & { friend_name?: string | nu
   };
 }
 
-// GET /api/forms — list all forms
+// GET /api/forms — list all forms (with submission stats + delivering accounts)
 forms.get('/api/forms', async (c) => {
   try {
-    const items = await getForms(c.env.DB);
-    return c.json({ success: true, data: items.map(serializeForm) });
+    const items = await getFormsWithStats(c.env.DB);
+    return c.json({
+      success: true,
+      data: items.map((row) =>
+        serializeForm(row, {
+          lastSubmittedAt: row.last_submitted_at,
+          usedByAccounts: row.used_by_accounts,
+        }),
+      ),
+    });
   } catch (err) {
     console.error('GET /api/forms error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -89,6 +110,9 @@ forms.post('/api/forms', async (c) => {
       onSubmitWebhookHeaders?: string | null;
       onSubmitWebhookFailMessage?: string | null;
       saveToMetadata?: boolean;
+      ogTitle?: string | null;
+      ogDescription?: string | null;
+      ogImageUrl?: string | null;
     }>();
 
     if (!body.name) {
@@ -107,6 +131,9 @@ forms.post('/api/forms', async (c) => {
       onSubmitWebhookHeaders: body.onSubmitWebhookHeaders ?? null,
       onSubmitWebhookFailMessage: body.onSubmitWebhookFailMessage ?? null,
       saveToMetadata: body.saveToMetadata,
+      ogTitle: body.ogTitle ?? null,
+      ogDescription: body.ogDescription ?? null,
+      ogImageUrl: body.ogImageUrl ?? null,
     });
 
     return c.json({ success: true, data: serializeForm(form) }, 201);
@@ -133,6 +160,9 @@ forms.put('/api/forms/:id', async (c) => {
       onSubmitWebhookFailMessage?: string | null;
       saveToMetadata?: boolean;
       isActive?: boolean;
+      ogTitle?: string | null;
+      ogDescription?: string | null;
+      ogImageUrl?: string | null;
     }>();
 
     // Only include fields that were explicitly sent (avoid undefined → null conversion)
@@ -149,6 +179,9 @@ forms.put('/api/forms/:id', async (c) => {
     if (body.onSubmitWebhookFailMessage !== undefined) updates.onSubmitWebhookFailMessage = body.onSubmitWebhookFailMessage;
     if (body.saveToMetadata !== undefined) updates.saveToMetadata = body.saveToMetadata;
     if (body.isActive !== undefined) updates.isActive = body.isActive;
+    if (body.ogTitle !== undefined) updates.ogTitle = body.ogTitle;
+    if (body.ogDescription !== undefined) updates.ogDescription = body.ogDescription;
+    if (body.ogImageUrl !== undefined) updates.ogImageUrl = body.ogImageUrl;
 
     const updated = await updateForm(c.env.DB, id, updates as any);
 

@@ -1,0 +1,10 @@
+{
+  "projectName": "line-harness",
+  "workerName": "line-harness",
+  "workerUrl": "https://line-harness.kei-01261026.workers.dev",
+  "adminUrl": "https://line-harness-admin-134f68c9.pages.dev",
+  "d1DatabaseName": "line-harness",
+  "d1DatabaseId": "0a68f5ef-7ece-4b9a-9837-c3a8e87d9f6f",
+  "r2BucketName": "line-harness-images",
+  "accountId": "fe67ee32ff09d65511ba69bfd049bef5"
+}
