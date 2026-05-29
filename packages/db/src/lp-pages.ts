@@ -26,6 +26,15 @@ export type LpBlock =
       title?: string | null;
       showTitle?: boolean;
       color?: string | null;
+    }
+  | {
+      id: string;
+      type: 'reservation';
+      reservationType: 'event' | 'salon';
+      eventId?: string | null;
+      menuId?: string | null;
+      label: string;
+      style?: 'primary' | 'secondary';
     };
 
 export type LpBlockType = LpBlock['type'];
@@ -155,6 +164,30 @@ export function normalizeBlocks(blocks: unknown): LpBlock[] {
         }
         const style = raw.style === 'secondary' ? 'secondary' : 'primary';
         return { id, type: 'button', label: raw.label, href: raw.href, style };
+      }
+      case 'reservation': {
+        if (typeof raw.label !== 'string' || !raw.label.trim()) {
+          throw new Error(`blocks[${i}].label is required for reservation`);
+        }
+        const reservationType = raw.reservationType === 'salon' ? 'salon' : 'event';
+        if (reservationType === 'event' && (typeof raw.eventId !== 'string' || !raw.eventId.trim())) {
+          throw new Error(`blocks[${i}].eventId is required for event reservation`);
+        }
+        const eventId = reservationType === 'event' ? (raw.eventId as string) : null;
+        const menuId =
+          reservationType === 'salon' && typeof raw.menuId === 'string' && raw.menuId.trim()
+            ? raw.menuId
+            : null;
+        const style = raw.style === 'secondary' ? 'secondary' : 'primary';
+        return {
+          id,
+          type: 'reservation',
+          reservationType,
+          eventId,
+          menuId,
+          label: raw.label,
+          style,
+        };
       }
       case 'divider':
         return { id, type: 'divider' };

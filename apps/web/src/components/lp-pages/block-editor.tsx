@@ -15,7 +15,15 @@ import {
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
-import type { LpBlock, LpBlockType } from '@/lib/api'
+import { useEffect, useState } from 'react'
+import {
+  eventsApi,
+  bookingApi,
+  type LpBlock,
+  type LpBlockType,
+  type EventListItem,
+  type BookingMenu,
+} from '@/lib/api'
 import { createDefaultBlock } from '@/lib/lp-blocks'
 import { SortableBlockItem } from './sortable-block-item'
 import { AddBlockMenu } from './add-block-menu'
@@ -23,9 +31,33 @@ import { AddBlockMenu } from './add-block-menu'
 interface Props {
   blocks: LpBlock[]
   onChange: (next: LpBlock[]) => void
+  accountId?: string
 }
 
-export function BlockEditor({ blocks, onChange }: Props) {
+export function BlockEditor({ blocks, onChange, accountId }: Props) {
+  const hasReservation = blocks.some((b) => b.type === 'reservation')
+  const [events, setEvents] = useState<EventListItem[]>([])
+  const [menus, setMenus] = useState<BookingMenu[]>([])
+  useEffect(() => {
+    if (!accountId || !hasReservation) return
+    let cancelled = false
+    eventsApi
+      .listEvents(accountId)
+      .then((r) => {
+        if (!cancelled) setEvents(r.items.filter((e) => e.is_published === 1))
+      })
+      .catch(() => {})
+    bookingApi
+      .listMenus(accountId)
+      .then((r) => {
+        if (!cancelled) setMenus(r.menus.filter((m) => m.is_active === 1))
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [accountId, hasReservation])
+
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -65,6 +97,9 @@ export function BlockEditor({ blocks, onChange }: Props) {
                 block={b}
                 onChange={(next) => updateBlock(b.id, next)}
                 onRemove={() => removeBlock(b.id)}
+                events={events}
+                menus={menus}
+                accountId={accountId}
               />
             ))}
           </SortableContext>

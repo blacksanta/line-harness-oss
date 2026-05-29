@@ -106,6 +106,11 @@ export function validateForm(form: LpFormState): string | null {
       if (!b.label.trim()) return 'ボタンのラベルを入力してください'
       if (!b.href.trim()) return 'ボタンのリンク先URLを入力してください'
     }
+    if (b.type === 'reservation') {
+      if (!b.label.trim()) return '予約ボタンのラベルを入力してください'
+      if (b.reservationType === 'event' && !b.eventId)
+        return '予約ボタンのイベントを選択してください'
+    }
   }
   if (form.accessWindowMode === 'relative' || form.accessWindowMode === 'both') {
     if (!form.relativeDaysAfterFriendAdd || Number(form.relativeDaysAfterFriendAdd) <= 0) {

@@ -4,7 +4,15 @@ import { useState, useRef, useEffect } from 'react'
 import type { LpBlockType } from '@/lib/api'
 import { BLOCK_ICONS, BLOCK_LABELS } from '@/lib/lp-blocks'
 
-const TYPES: LpBlockType[] = ['markdown', 'video', 'image', 'button', 'countdown', 'divider']
+const TYPES: LpBlockType[] = [
+  'markdown',
+  'video',
+  'image',
+  'button',
+  'reservation',
+  'countdown',
+  'divider',
+]
 
 export function AddBlockMenu({ onAdd }: { onAdd: (type: LpBlockType) => void }) {
   const [open, setOpen] = useState(false)

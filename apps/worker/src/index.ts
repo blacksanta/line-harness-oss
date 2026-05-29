@@ -782,6 +782,19 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
         var cls = block.style === 'secondary' ? 'btn btn-secondary' : 'btn btn-primary';
         return '<div class="block-button"><a class="' + cls + '" href="' + escapeHtml(safeUrl(block.href)) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(block.label || '') + '</a></div>';
       }
+      case 'reservation': {
+        var rHref = '#';
+        if(LIFF_ID){
+          if(block.reservationType === 'salon'){
+            rHref = '/o?liffId=' + encodeURIComponent(LIFF_ID) + '&page=salon-book'
+                  + (block.menuId ? '&menu_id=' + encodeURIComponent(block.menuId) : '');
+          } else if(block.eventId){
+            rHref = '/o?liffId=' + encodeURIComponent(LIFF_ID) + '&page=event&id=' + encodeURIComponent(block.eventId);
+          }
+        }
+        var rCls = block.style === 'secondary' ? 'btn btn-secondary' : 'btn btn-primary';
+        return '<div class="block-button"><a class="' + rCls + '" href="' + escapeHtml(rHref) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(block.label || '') + '</a></div>';
+      }
       case 'divider':
         return '<hr class="block-divider">';
       case 'countdown': {

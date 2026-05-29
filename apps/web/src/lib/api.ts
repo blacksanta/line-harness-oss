@@ -1279,6 +1279,15 @@ export type LpBlock =
       showTitle?: boolean
       color?: string | null
     }
+  | {
+      id: string
+      type: 'reservation'
+      reservationType: 'event' | 'salon'
+      eventId?: string | null
+      menuId?: string | null
+      label: string
+      style?: 'primary' | 'secondary'
+    }
 
 export type LpBlockType = LpBlock['type']
 
