@@ -7,6 +7,7 @@ export const BLOCK_LABELS: Record<LpBlockType, string> = {
   button: 'ボタン',
   divider: '区切り線',
   countdown: '期限カウントダウン',
+  reservation: '予約お申し込みボタン',
 }
 
 export const BLOCK_ICONS: Record<LpBlockType, string> = {
@@ -16,6 +17,7 @@ export const BLOCK_ICONS: Record<LpBlockType, string> = {
   button: '🔘',
   divider: '➖',
   countdown: '⏳',
+  reservation: '📅',
 }
 
 export function createDefaultBlock(type: LpBlockType): LpBlock {
@@ -33,6 +35,16 @@ export function createDefaultBlock(type: LpBlockType): LpBlock {
       return { id, type }
     case 'countdown':
       return { id, type, title: null, showTitle: true, color: null }
+    case 'reservation':
+      return {
+        id,
+        type,
+        reservationType: 'event',
+        eventId: null,
+        menuId: null,
+        label: '予約お申し込み',
+        style: 'primary',
+      }
   }
 }
 

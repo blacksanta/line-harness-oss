@@ -3,6 +3,7 @@
 import type { LineAccount } from '@line-crm/shared'
 import type { LpFormState, AccessWindowMode } from './lp-form-state'
 import { BlockEditor } from './block-editor'
+import { useAccount } from '@/contexts/account-context'
 
 interface Props {
   form: LpFormState
@@ -23,6 +24,8 @@ const windowModeOptions: { value: AccessWindowMode; label: string }[] = [
 ]
 
 export default function LpForm({ form, onChange, accounts, mode }: Props) {
+  const { selectedAccountId } = useAccount()
+  const blockAccountId = form.lineAccountId || selectedAccountId || ''
   const showAbsolute = form.accessWindowMode === 'absolute' || form.accessWindowMode === 'both'
   const showRelative = form.accessWindowMode === 'relative' || form.accessWindowMode === 'both'
 
@@ -85,7 +88,11 @@ export default function LpForm({ form, onChange, accounts, mode }: Props) {
         <h2 className="text-sm font-semibold text-gray-800">
           コンテンツ <span className="text-xs font-normal text-gray-500">（ブロックを追加して任意の順に並べ替えできます）</span>
         </h2>
-        <BlockEditor blocks={form.blocks} onChange={(blocks) => onChange({ blocks })} />
+        <BlockEditor
+          blocks={form.blocks}
+          onChange={(blocks) => onChange({ blocks })}
+          accountId={blockAccountId}
+        />
       </section>
 
       {/* 視聴期限 */}

@@ -349,6 +349,51 @@ describe('normalizeBlocks', () => {
     expect(r[0]).toMatchObject({ type: 'image', url: 'https://x', alt: null, href: null });
   });
 
+  it('reservation.label 必須', () => {
+    expect(() =>
+      normalizeBlocks([{ type: 'reservation', reservationType: 'event', eventId: 'e1', label: '' }]),
+    ).toThrow();
+  });
+
+  it('reservation(event) は eventId 必須', () => {
+    expect(() =>
+      normalizeBlocks([{ type: 'reservation', reservationType: 'event', label: '予約' }]),
+    ).toThrow();
+  });
+
+  it('reservation(event) 正常系: eventId を保持し menuId は null', () => {
+    const r = normalizeBlocks([
+      { type: 'reservation', reservationType: 'event', eventId: 'ev-1', label: '予約', menuId: 'ignored' },
+    ]);
+    expect(r[0]).toMatchObject({
+      type: 'reservation',
+      reservationType: 'event',
+      eventId: 'ev-1',
+      menuId: null,
+      label: '予約',
+      style: 'primary',
+    });
+  });
+
+  it('reservation(salon) は menuId 省略可・eventId は null', () => {
+    const r = normalizeBlocks([
+      { type: 'reservation', reservationType: 'salon', label: 'サロン予約' },
+    ]);
+    expect(r[0]).toMatchObject({
+      type: 'reservation',
+      reservationType: 'salon',
+      eventId: null,
+      menuId: null,
+    });
+  });
+
+  it('reservation(salon) は menuId を保持できる', () => {
+    const r = normalizeBlocks([
+      { type: 'reservation', reservationType: 'salon', label: 'サロン予約', menuId: 'menu-1' },
+    ]);
+    expect(r[0]).toMatchObject({ type: 'reservation', reservationType: 'salon', menuId: 'menu-1' });
+  });
+
   it('配列でない入力は throw', () => {
     expect(() => normalizeBlocks('not-an-array' as never)).toThrow();
   });

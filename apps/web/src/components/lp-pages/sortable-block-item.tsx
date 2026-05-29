@@ -3,7 +3,7 @@
 import dynamic from 'next/dynamic'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import type { LpBlock } from '@/lib/api'
+import type { LpBlock, EventListItem, BookingMenu } from '@/lib/api'
 import { BLOCK_ICONS, BLOCK_LABELS } from '@/lib/lp-blocks'
 
 const RichTextEditor = dynamic(() => import('./rich-text-editor'), {
@@ -19,9 +19,19 @@ interface Props {
   block: LpBlock
   onChange: (next: LpBlock) => void
   onRemove: () => void
+  events?: EventListItem[]
+  menus?: BookingMenu[]
+  accountId?: string
 }
 
-export function SortableBlockItem({ block, onChange, onRemove }: Props) {
+export function SortableBlockItem({
+  block,
+  onChange,
+  onRemove,
+  events,
+  menus,
+  accountId,
+}: Props) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: block.id,
   })
@@ -59,12 +69,30 @@ export function SortableBlockItem({ block, onChange, onRemove }: Props) {
         </button>
       </div>
 
-      <BlockBody block={block} onChange={onChange} />
+      <BlockBody
+        block={block}
+        onChange={onChange}
+        events={events}
+        menus={menus}
+        accountId={accountId}
+      />
     </div>
   )
 }
 
-function BlockBody({ block, onChange }: { block: LpBlock; onChange: (b: LpBlock) => void }) {
+function BlockBody({
+  block,
+  onChange,
+  events = [],
+  menus = [],
+  accountId,
+}: {
+  block: LpBlock
+  onChange: (b: LpBlock) => void
+  events?: EventListItem[]
+  menus?: BookingMenu[]
+  accountId?: string
+}) {
   switch (block.type) {
     case 'markdown':
       return (
@@ -145,6 +173,79 @@ function BlockBody({ block, onChange }: { block: LpBlock; onChange: (b: LpBlock)
             <option value="primary">プライマリ（緑）</option>
             <option value="secondary">セカンダリ（グレー）</option>
           </select>
+        </div>
+      )
+
+    case 'reservation':
+      return (
+        <div className="space-y-2">
+          <input
+            type="text"
+            value={block.label}
+            onChange={(e) => onChange({ ...block, label: e.target.value })}
+            placeholder="ボタンラベル"
+            className="w-full p-2 border border-gray-300 rounded text-sm"
+          />
+          <select
+            value={block.reservationType}
+            onChange={(e) =>
+              onChange({
+                ...block,
+                reservationType: e.target.value as 'event' | 'salon',
+                eventId: null,
+                menuId: null,
+              })
+            }
+            className="w-full p-2 border border-gray-300 rounded text-sm bg-white"
+          >
+            <option value="event">イベント予約</option>
+            <option value="salon">通常予約（サロン）</option>
+          </select>
+          {block.reservationType === 'event' && (
+            <select
+              value={block.eventId ?? ''}
+              onChange={(e) => onChange({ ...block, eventId: e.target.value || null })}
+              className="w-full p-2 border border-gray-300 rounded text-sm bg-white"
+            >
+              <option value="">— イベントを選択 —</option>
+              {events.map((ev) => (
+                <option key={ev.id} value={ev.id}>
+                  {ev.name}
+                </option>
+              ))}
+            </select>
+          )}
+          {block.reservationType === 'salon' && (
+            <select
+              value={block.menuId ?? ''}
+              onChange={(e) => onChange({ ...block, menuId: e.target.value || null })}
+              className="w-full p-2 border border-gray-300 rounded text-sm bg-white"
+            >
+              <option value="">— メニュー指定なし —</option>
+              {menus.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <select
+            value={block.style ?? 'primary'}
+            onChange={(e) =>
+              onChange({ ...block, style: e.target.value as 'primary' | 'secondary' })
+            }
+            className="w-full p-2 border border-gray-300 rounded text-sm bg-white"
+          >
+            <option value="primary">プライマリ（緑）</option>
+            <option value="secondary">セカンダリ（グレー）</option>
+          </select>
+          {block.reservationType === 'event' && events.length === 0 && (
+            <p className="text-xs text-amber-600">
+              {accountId
+                ? '公開中のイベントがありません。先にイベントを作成・公開してください。'
+                : '「LINEアカウント」を選択するとイベント一覧が表示されます。'}
+            </p>
+          )}
         </div>
       )
 

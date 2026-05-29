@@ -286,6 +286,37 @@ function BlockPreview({
       )
     }
 
+    case 'reservation': {
+      const isPrimary = block.style !== 'secondary'
+      const target =
+        block.reservationType === 'salon'
+          ? '通常予約'
+          : block.eventId
+            ? 'イベント予約'
+            : '（イベント未選択）'
+      return (
+        <div style={{ margin: '24px 0', textAlign: 'center' }}>
+          <a
+            href="#"
+            onClick={(e) => e.preventDefault()}
+            style={{
+              display: 'inline-block',
+              padding: '14px 28px',
+              borderRadius: 8,
+              textDecoration: 'none',
+              fontWeight: 700,
+              lineHeight: 1.2,
+              background: isPrimary ? '#06C755' : '#f1f5f9',
+              color: isPrimary ? '#fff' : '#0f172a',
+            }}
+          >
+            {block.label || '（ラベル未入力）'}
+          </a>
+          <p style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>→ {target}ページへ誘導</p>
+        </div>
+      )
+    }
+
     case 'divider':
       return (
         <hr
