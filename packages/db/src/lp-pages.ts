@@ -35,7 +35,11 @@ export type LpBlock =
       menuId?: string | null;
       label: string;
       style?: 'primary' | 'secondary';
-    };
+    }
+  // 動画ゲート: videoGateStart と videoGateEnd のペアで挟んだ区間を、
+  // 直近上の動画を指定分数（または視聴完了）見るまで隠す。
+  | { id: string; type: 'videoGateStart'; minutes: number; hintText?: string | null }
+  | { id: string; type: 'videoGateEnd' };
 
 export type LpBlockType = LpBlock['type'];
 
@@ -191,6 +195,17 @@ export function normalizeBlocks(blocks: unknown): LpBlock[] {
       }
       case 'divider':
         return { id, type: 'divider' };
+      // 動画ゲートは構成不正（ペア欠落・順序・対象動画なし）でも保存を弾かない方針。
+      // ランタイム側でフェイルオープン、エディタ側でインライン警告する。
+      case 'videoGateStart': {
+        const n = Number(raw.minutes);
+        const minutes = Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
+        const hintText =
+          typeof raw.hintText === 'string' && raw.hintText.trim() ? raw.hintText : null;
+        return { id, type: 'videoGateStart', minutes, hintText };
+      }
+      case 'videoGateEnd':
+        return { id, type: 'videoGateEnd' };
       case 'countdown': {
         const title = typeof raw.title === 'string' ? raw.title : null;
         const showTitle = typeof raw.showTitle === 'boolean' ? raw.showTitle : true;

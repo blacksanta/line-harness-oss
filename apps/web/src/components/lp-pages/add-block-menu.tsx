@@ -11,6 +11,8 @@ const TYPES: LpBlockType[] = [
   'button',
   'reservation',
   'countdown',
+  'videoGateStart',
+  'videoGateEnd',
   'divider',
 ]
 

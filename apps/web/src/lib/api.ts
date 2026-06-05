@@ -1288,6 +1288,8 @@ export type LpBlock =
       label: string
       style?: 'primary' | 'secondary'
     }
+  | { id: string; type: 'videoGateStart'; minutes: number; hintText?: string | null }
+  | { id: string; type: 'videoGateEnd' }
 
 export type LpBlockType = LpBlock['type']
 

@@ -394,6 +394,28 @@ describe('normalizeBlocks', () => {
     expect(r[0]).toMatchObject({ type: 'reservation', reservationType: 'salon', menuId: 'menu-1' });
   });
 
+  it('videoGateStart 正常系: minutes を整数化し hintText を保持', () => {
+    const r = normalizeBlocks([
+      { type: 'videoGateStart', minutes: 3.9, hintText: '特典は視聴後に表示' },
+    ]);
+    expect(r[0]).toMatchObject({
+      type: 'videoGateStart',
+      minutes: 3,
+      hintText: '特典は視聴後に表示',
+    });
+  });
+
+  it('videoGateStart は不正な minutes を 1 に丸める / 空 hintText は null', () => {
+    const r = normalizeBlocks([{ type: 'videoGateStart', minutes: 0, hintText: '   ' }]);
+    expect(r[0]).toMatchObject({ type: 'videoGateStart', minutes: 1, hintText: null });
+  });
+
+  it('videoGateEnd 正常系（構成不正でも throw しない）', () => {
+    const r = normalizeBlocks([{ type: 'videoGateEnd' }]);
+    expect(r[0]).toMatchObject({ type: 'videoGateEnd' });
+    expect(typeof r[0].id).toBe('string');
+  });
+
   it('配列でない入力は throw', () => {
     expect(() => normalizeBlocks('not-an-array' as never)).toThrow();
   });

@@ -328,6 +328,42 @@ function BlockPreview({
         />
       )
 
+    case 'videoGateStart':
+      return (
+        <div
+          style={{
+            margin: '16px 0 0',
+            padding: '6px 10px',
+            borderTop: '2px dashed #f59e0b',
+            background: '#fffbeb',
+            color: '#b45309',
+            fontSize: 11,
+            fontWeight: 700,
+            borderRadius: '6px 6px 0 0',
+          }}
+        >
+          🔒 動画ゲート開始（{block.minutes || 1}分視聴で以降を表示）
+        </div>
+      )
+
+    case 'videoGateEnd':
+      return (
+        <div
+          style={{
+            margin: '0 0 16px',
+            padding: '6px 10px',
+            borderBottom: '2px dashed #f59e0b',
+            background: '#fffbeb',
+            color: '#b45309',
+            fontSize: 11,
+            fontWeight: 700,
+            borderRadius: '0 0 6px 6px',
+          }}
+        >
+          🔓 動画ゲート終了
+        </div>
+      )
+
     case 'countdown': {
       if (!hasExpiry) {
         return (

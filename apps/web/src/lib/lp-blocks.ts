@@ -8,6 +8,8 @@ export const BLOCK_LABELS: Record<LpBlockType, string> = {
   divider: '区切り線',
   countdown: '期限カウントダウン',
   reservation: '予約お申し込みボタン',
+  videoGateStart: '動画ゲート開始',
+  videoGateEnd: '動画ゲート終了',
 }
 
 export const BLOCK_ICONS: Record<LpBlockType, string> = {
@@ -18,6 +20,8 @@ export const BLOCK_ICONS: Record<LpBlockType, string> = {
   divider: '➖',
   countdown: '⏳',
   reservation: '📅',
+  videoGateStart: '🔒',
+  videoGateEnd: '🔓',
 }
 
 export function createDefaultBlock(type: LpBlockType): LpBlock {
@@ -45,6 +49,10 @@ export function createDefaultBlock(type: LpBlockType): LpBlock {
         label: '予約お申し込み',
         style: 'primary',
       }
+    case 'videoGateStart':
+      return { id, type, minutes: 3, hintText: null }
+    case 'videoGateEnd':
+      return { id, type }
   }
 }
 

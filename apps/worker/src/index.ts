@@ -690,6 +690,10 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 .countdown-cell{display:flex;flex-direction:column;align-items:center}
 .countdown-num{background:#E85C3A;color:#fff;border-radius:8px;padding:14px 20px;font-size:1.75rem;font-weight:700;box-shadow:0 2px 4px rgba(0,0,0,.15);min-width:64px;text-align:center;font-variant-numeric:tabular-nums}
 .countdown-label{font-size:.78rem;color:#64748b;margin-top:6px}
+.lp-gate-hint{margin:24px 0;padding:20px 16px;text-align:center;background:#f1f5f9;border:1px dashed #cbd5e1;border-radius:12px;color:#475569;font-size:14px;font-weight:600}
+.lp-gate-hint .lp-gate-lock{font-size:20px;display:block;margin-bottom:6px}
+.lp-gate-reveal{animation:lpGateFade .6s ease}
+@keyframes lpGateFade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 @media(max-width:480px){
 .countdown-num{font-size:1.35rem;padding:10px 12px;min-width:46px}
 .countdown-title{font-size:1.05rem}
@@ -764,7 +768,7 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
         var usePlyr = !!(ytId || vmId);
         var pid = 'lp-player-' + index;
         if(usePlyr){
-          plyrTargets.push({ selector: '#' + pid, ytId: ytId });
+          plyrTargets.push({ selector: '#' + pid, ytId: ytId, index: index });
           return '<div class="video-wrap"><div class="plyr__video-embed" id="' + pid + '">'
                + '<iframe src="' + escapeHtml(src) + '" allowtransparency allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>'
                + '</div></div>';
@@ -797,6 +801,10 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
       }
       case 'divider':
         return '<hr class="block-divider">';
+      case 'videoGateStart':
+      case 'videoGateEnd':
+        // ゲートの描画は render() 側でまとめて処理する（区間を隠すため）。
+        return '';
       case 'countdown': {
         var title = typeof block.title === 'string' && block.title ? block.title : '公開終了まであと…';
         var showTitle = block.showTitle !== false;
@@ -827,26 +835,124 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
     return arr;
   }
 
+  function isTrackableVideo(b){
+    return b && b.type === 'video' && !!(youtubeId(b.url) || vimeoId(b.url));
+  }
+
+  function renderGate(gateBlock, minutes, trackVideoIndex, innerHtml){
+    var hint = (typeof gateBlock.hintText === 'string' && gateBlock.hintText)
+      ? gateBlock.hintText
+      : ('動画を' + minutes + '分視聴すると表示されます');
+    var gid = gateBlock.id || ('gate-' + trackVideoIndex);
+    return '<div class="lp-gate" data-gate="1" data-minutes="' + minutes
+      + '" data-video-index="' + trackVideoIndex + '" data-gate-id="' + escapeHtml(gid) + '">'
+      +   '<div class="lp-gate-hint"><span class="lp-gate-lock">🔒</span>' + escapeHtml(hint) + '</div>'
+      +   '<div class="lp-gate-content" style="display:none">' + innerHtml + '</div>'
+      + '</div>';
+  }
+
   function render(payload){
     app.className = '';
     var html = '';
 
     var blocks = (payload.blocks && payload.blocks.length) ? payload.blocks : legacyFallbackBlocks(payload);
 
+    // ── 動画ゲートの境界を特定（1ページ1組想定。最初の開始と、その後の最初の終了） ──
+    var startIdx = -1, endIdx = -1;
+    for(var s = 0; s < blocks.length; s++){
+      if(blocks[s] && blocks[s].type === 'videoGateStart' && startIdx < 0) startIdx = s;
+      if(blocks[s] && blocks[s].type === 'videoGateEnd' && startIdx >= 0 && s > startIdx){ endIdx = s; break; }
+    }
+    var hasGate = startIdx >= 0 && endIdx > startIdx;
+
+    // 直近上のトラッキング可能な動画を探す（質問3-A）
+    var trackVideoIndex = -1;
+    if(hasGate){
+      for(var k = startIdx - 1; k >= 0; k--){
+        if(isTrackableVideo(blocks[k])){ trackVideoIndex = k; break; }
+      }
+    }
+    var gateTrackable = hasGate && trackVideoIndex >= 0;
+
     var plyrTargets = [];
     for(var i = 0; i < blocks.length; i++){
+      if(hasGate && i === startIdx){
+        var inner = '';
+        for(var j = startIdx + 1; j < endIdx; j++){
+          inner += renderBlock(blocks[j], j, plyrTargets);
+        }
+        if(gateTrackable){
+          html += renderGate(blocks[startIdx], blocks[startIdx].minutes || 1, trackVideoIndex, inner);
+        } else {
+          // フェイルオープン（質問14-B）: トラッキング不能なら最初から全部表示
+          html += inner;
+        }
+        i = endIdx; // 終了ゲートまでスキップ（ループの i++ で終了ゲートを飛ばす）
+        continue;
+      }
+      // 区間外に紛れたゲートマーカーは描画しない
+      if(blocks[i] && (blocks[i].type === 'videoGateStart' || blocks[i].type === 'videoGateEnd')) continue;
       html += renderBlock(blocks[i], i, plyrTargets);
     }
 
     app.innerHTML = html;
 
+    var players = {};
     plyrTargets.forEach(function(t){
       var p = new Plyr(t.selector, {
         youtube: { noCookie: false, rel: 0, showinfo: 0, iv_load_policy: 3, modestbranding: 1, playsinline: 1 },
         vimeo:   { byline: false, portrait: false, title: false }
       });
       if(t.ytId) p.poster = 'https://img.youtube.com/vi/' + t.ytId + '/maxresdefault.jpg';
+      players[t.index] = p;
     });
+
+    setupGates(players);
+  }
+
+  // 動画ゲート: 指定分数の「実視聴時間」到達、または視聴完了で区間を開放（質問4-B / 質問15-B）。
+  function setupGates(players){
+    var gates = document.querySelectorAll('[data-gate]');
+    for(var i = 0; i < gates.length; i++){
+      (function(gate){
+        var minutes = parseInt(gate.getAttribute('data-minutes'), 10) || 1;
+        var thresholdSec = minutes * 60;
+        var vIndex = gate.getAttribute('data-video-index');
+        var gateId = gate.getAttribute('data-gate-id') || '';
+        var storeKey = 'lpgate:' + SLUG + ':' + gateId;
+        var hint = gate.querySelector('.lp-gate-hint');
+        var content = gate.querySelector('.lp-gate-content');
+
+        function open(){
+          if(!content || content.style.display !== 'none') return;
+          content.style.display = '';
+          content.className += ' lp-gate-reveal';
+          if(hint) hint.style.display = 'none';
+          try { localStorage.setItem(storeKey, '1'); } catch(e){}
+        }
+
+        // 一度開いたら以後も開いたまま（質問5-B）
+        try { if(localStorage.getItem(storeKey) === '1'){ open(); return; } } catch(e){}
+
+        var player = players[vIndex];
+        if(!player){ open(); return; } // フェイルオープン保険
+
+        var watched = 0;   // 実視聴秒数の累積
+        var last = null;   // 直前の currentTime
+
+        player.on('timeupdate', function(){
+          if(!player.playing) return;
+          var t = player.currentTime;
+          // 再生中の連続した進行のみ加算（シーク/早送りは加算しない）
+          if(last != null && t > last && (t - last) < 1.5){ watched += (t - last); }
+          last = t;
+          if(watched >= thresholdSec) open();
+        });
+        player.on('seeking', function(){ last = null; });
+        player.on('pause', function(){ last = null; });
+        player.on('ended', function(){ open(); });
+      })(gates[i]);
+    }
   }
 
   function startCountdown(expiresAtMs, serverNowMs, redirectUrl){
