@@ -4,7 +4,7 @@ import dynamic from 'next/dynamic'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { LpBlock, EventListItem, BookingMenu } from '@/lib/api'
-import { BLOCK_ICONS, BLOCK_LABELS } from '@/lib/lp-blocks'
+import { BLOCK_ICONS, BLOCK_LABELS, blockSummary } from '@/lib/lp-blocks'
 import { youtubeId, vimeoId } from '@/lib/lp-video'
 
 // 動画ゲートの構成不正をエディタ上で警告する（質問13-B: 警告のみ・保存は許可）。
@@ -44,6 +44,8 @@ interface Props {
   block: LpBlock
   index?: number
   allBlocks?: LpBlock[]
+  collapsed?: boolean
+  onToggleCollapse?: () => void
   onChange: (next: LpBlock) => void
   onRemove: () => void
   events?: EventListItem[]
@@ -55,6 +57,8 @@ export function SortableBlockItem({
   block,
   index,
   allBlocks,
+  collapsed = false,
+  onToggleCollapse,
   onChange,
   onRemove,
   events,
@@ -76,7 +80,7 @@ export function SortableBlockItem({
       style={style}
       className="border border-gray-200 rounded-lg p-3 mb-3 bg-white shadow-sm"
     >
-      <div className="flex items-center justify-between mb-3 gap-2">
+      <div className={`flex items-center justify-between gap-2${collapsed ? '' : ' mb-3'}`}>
         <button
           type="button"
           {...attributes}
@@ -86,36 +90,51 @@ export function SortableBlockItem({
         >
           ⋮⋮
         </button>
-        <span className="text-xs font-medium text-gray-600 flex-1">
-          {BLOCK_ICONS[block.type]} {BLOCK_LABELS[block.type]}
-        </span>
+        <button
+          type="button"
+          onClick={onToggleCollapse}
+          className="flex items-center gap-1.5 flex-1 min-w-0 text-left py-1"
+          aria-expanded={!collapsed}
+        >
+          <span className="text-gray-400 text-[10px] w-3 shrink-0">{collapsed ? '▶' : '▼'}</span>
+          <span className="text-xs font-medium text-gray-600 shrink-0">
+            {BLOCK_ICONS[block.type]} {BLOCK_LABELS[block.type]}
+          </span>
+          {collapsed && blockSummary(block) && (
+            <span className="text-xs text-gray-400 truncate">— {blockSummary(block)}</span>
+          )}
+        </button>
         <button
           type="button"
           onClick={onRemove}
-          className="text-xs text-red-600 hover:text-red-800 hover:underline px-2 py-1"
+          className="text-xs text-red-600 hover:text-red-800 hover:underline px-2 py-1 shrink-0"
         >
           削除
         </button>
       </div>
 
-      <BlockBody
-        block={block}
-        onChange={onChange}
-        events={events}
-        menus={menus}
-        accountId={accountId}
-      />
+      {!collapsed && (
+        <>
+          <BlockBody
+            block={block}
+            onChange={onChange}
+            events={events}
+            menus={menus}
+            accountId={accountId}
+          />
 
-      {allBlocks &&
-        typeof index === 'number' &&
-        (() => {
-          const warn = gateWarning(block, allBlocks, index)
-          return warn ? (
-            <p className="mt-2 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
-              ⚠ {warn}
-            </p>
-          ) : null
-        })()}
+          {allBlocks &&
+            typeof index === 'number' &&
+            (() => {
+              const warn = gateWarning(block, allBlocks, index)
+              return warn ? (
+                <p className="mt-2 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                  ⚠ {warn}
+                </p>
+              ) : null
+            })()}
+        </>
+      )}
     </div>
   )
 }
