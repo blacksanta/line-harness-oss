@@ -56,6 +56,33 @@ export function createDefaultBlock(type: LpBlockType): LpBlock {
   }
 }
 
+// 折りたたみ時にヘッダー横へ出す、ブロック中身の1行サマリ。
+export function blockSummary(block: LpBlock): string {
+  switch (block.type) {
+    case 'markdown': {
+      const text = block.text.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+      if (!text) return '（未入力）'
+      return text.length > 30 ? `${text.slice(0, 30)}…` : text
+    }
+    case 'video':
+      return block.url.trim() || '（URL未設定）'
+    case 'image':
+      return (block.alt ?? '').trim() || block.url.trim() || '（URL未設定）'
+    case 'button':
+      return block.label.trim() || '（ラベル未入力）'
+    case 'reservation':
+      return block.label.trim() || '（ラベル未入力）'
+    case 'divider':
+      return '―'
+    case 'countdown':
+      return (block.title ?? '').trim() || '公開終了まであと…'
+    case 'videoGateStart':
+      return `${block.minutes || 1}分視聴で開放`
+    case 'videoGateEnd':
+      return ''
+  }
+}
+
 export function summarizeBlocks(blocks: LpBlock[]): string {
   if (blocks.length === 0) return '空'
   const counts: Partial<Record<LpBlockType, number>> = {}
