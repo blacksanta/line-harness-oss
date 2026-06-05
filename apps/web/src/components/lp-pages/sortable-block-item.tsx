@@ -5,6 +5,31 @@ import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { LpBlock, EventListItem, BookingMenu } from '@/lib/api'
 import { BLOCK_ICONS, BLOCK_LABELS } from '@/lib/lp-blocks'
+import { youtubeId, vimeoId } from '@/lib/lp-video'
+
+// 動画ゲートの構成不正をエディタ上で警告する（質問13-B: 警告のみ・保存は許可）。
+function gateWarning(block: LpBlock, blocks: LpBlock[], index: number): string | null {
+  if (block.type === 'videoGateStart') {
+    const starts = blocks.filter((b) => b.type === 'videoGateStart')
+    if (starts.length > 1) return '動画ゲートは1ページに1組までです。余分な開始ゲートを削除してください。'
+    const hasEndAfter = blocks.slice(index + 1).some((b) => b.type === 'videoGateEnd')
+    if (!hasEndAfter) return 'このゲートより下に「動画ゲート終了」がありません。ペアで配置してください。'
+    const hasTrackableVideoAbove = blocks
+      .slice(0, index)
+      .some((b) => b.type === 'video' && !!(youtubeId(b.url) || vimeoId(b.url)))
+    if (!hasTrackableVideoAbove)
+      return 'このゲートより上にYouTube/Vimeo動画がありません。このままだと判定できず、公開時はゲートを無視して最初から表示されます。'
+    return null
+  }
+  if (block.type === 'videoGateEnd') {
+    const ends = blocks.filter((b) => b.type === 'videoGateEnd')
+    if (ends.length > 1) return '動画ゲートは1ページに1組までです。余分な終了ゲートを削除してください。'
+    const hasStartBefore = blocks.slice(0, index).some((b) => b.type === 'videoGateStart')
+    if (!hasStartBefore) return 'このゲートより上に「動画ゲート開始」がありません。ペアで配置してください。'
+    return null
+  }
+  return null
+}
 
 const RichTextEditor = dynamic(() => import('./rich-text-editor'), {
   ssr: false,
@@ -17,6 +42,8 @@ const RichTextEditor = dynamic(() => import('./rich-text-editor'), {
 
 interface Props {
   block: LpBlock
+  index?: number
+  allBlocks?: LpBlock[]
   onChange: (next: LpBlock) => void
   onRemove: () => void
   events?: EventListItem[]
@@ -26,6 +53,8 @@ interface Props {
 
 export function SortableBlockItem({
   block,
+  index,
+  allBlocks,
   onChange,
   onRemove,
   events,
@@ -76,6 +105,17 @@ export function SortableBlockItem({
         menus={menus}
         accountId={accountId}
       />
+
+      {allBlocks &&
+        typeof index === 'number' &&
+        (() => {
+          const warn = gateWarning(block, allBlocks, index)
+          return warn ? (
+            <p className="mt-2 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+              ⚠ {warn}
+            </p>
+          ) : null
+        })()}
     </div>
   )
 }
@@ -296,5 +336,45 @@ function BlockBody({
         </div>
       )
     }
+
+    case 'videoGateStart': {
+      const minutes = block.minutes || 1
+      return (
+        <div className="space-y-2">
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            <span className="whitespace-nowrap">直近上の動画を</span>
+            <input
+              type="number"
+              min={1}
+              step={1}
+              value={minutes}
+              onChange={(e) => {
+                const n = Math.max(1, Math.floor(Number(e.target.value) || 1))
+                onChange({ ...block, minutes: n })
+              }}
+              className="w-20 p-2 border border-gray-300 rounded text-sm"
+            />
+            <span className="whitespace-nowrap">分視聴すると以降を表示</span>
+          </label>
+          <input
+            type="text"
+            value={block.hintText ?? ''}
+            onChange={(e) => onChange({ ...block, hintText: e.target.value || null })}
+            placeholder={`未表示時のヒント文（未入力なら「動画を${minutes}分視聴すると表示されます」）`}
+            className="w-full p-2 border border-gray-300 rounded text-sm"
+          />
+          <p className="text-xs text-gray-500">
+            このブロックと「動画ゲート終了」で挟んだ範囲を、指定分数の視聴（または動画の視聴完了）まで隠します。
+          </p>
+        </div>
+      )
+    }
+
+    case 'videoGateEnd':
+      return (
+        <div className="text-xs text-gray-400 text-center py-2">
+          ― ここまでをゲートで隠します ―
+        </div>
+      )
   }
 }

@@ -91,10 +91,12 @@ export function BlockEditor({ blocks, onChange, accountId }: Props) {
             items={blocks.map((b) => b.id)}
             strategy={verticalListSortingStrategy}
           >
-            {blocks.map((b) => (
+            {blocks.map((b, i) => (
               <SortableBlockItem
                 key={b.id}
                 block={b}
+                index={i}
+                allBlocks={blocks}
                 onChange={(next) => updateBlock(b.id, next)}
                 onRemove={() => removeBlock(b.id)}
                 events={events}
