@@ -99,6 +99,12 @@ export function validateForm(form: LpFormState): string | null {
   if (!form.name.trim()) return '名前を入力してください'
   if (!form.expiredRedirectUrl.trim()) return '期限切れリダイレクトURLを入力してください'
   if (form.blocks.length === 0) return '少なくとも1つのブロックを追加してください'
+  // 予約ブロックは公開時に「LINEアカウントの liff_id」を予約用LIFFとして使うため、
+  // LPに line_account_id が無いと公開ページで予約ボタンが無効化される。保存時点で弾く。
+  const hasReservation = form.blocks.some((b) => b.type === 'reservation')
+  if (hasReservation && !form.lineAccountId.trim()) {
+    return '予約ブロックを使う場合はLINEアカウントを指定してください'
+  }
   for (const b of form.blocks) {
     if (b.type === 'video' && !b.url.trim()) return '動画ブロックのURLを入力してください'
     if (b.type === 'image' && !b.url.trim()) return '画像ブロックのURLを入力してください'
