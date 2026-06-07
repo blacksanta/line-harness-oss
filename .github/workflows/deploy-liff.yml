@@ -1,12 +1,18 @@
 name: Deploy LIFF
 
-# Configure CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets to enable auto-deploy.
-# apps/liff (Cloudflare Pages: line-crm-liff) は deploy-worker.yml / deploy-pages.yml の
-# 対象外なので独立ワークフローでデプロイする。
-# - staging ブランチ → line-crm-liff（staging 用 Pages プロジェクト）
-# - main ブランチ    → line-crm-liff-prod（本番用 Pages プロジェクト）
-# どちらも各プロジェクトの production デプロイ（--branch=main）を更新する。
-# 既存コードを手動で反映したいときは Actions の workflow_dispatch から実行する。
+# apps/liff (予約 React SPA) を Cloudflare Pages にデプロイする独立ワークフロー。
+# deploy-worker.yml / deploy-pages.yml の対象外なため別建て。
+#
+# 配信先 Pages プロジェクト（CLOUDFLARE_ACCOUNT_ID のアカウントに作成。無ければ自動作成）:
+#   - staging ブランチ → line-harness-liff       （production デプロイ = --branch main）
+#   - main    ブランチ → line-harness-liff-prod   （同上）
+#
+# apps/liff は API を VITE_API_BASE のオリジンへ投げる（_redirects は SPA フォールバックのみで
+# /api をプロキシしない）。worker 側 CORS は origin:'*' なのでクロスオリジンで叩ける。
+#   - staging: https://line-harness-staging.kei-01261026.workers.dev
+#   - main:    repo variable LIFF_API_BASE_PROD（未設定なら本番ビルドは API ベースが空になるので要設定）
+#
+# 既存コードを手で反映したいときは Actions の workflow_dispatch から実行する。
 on:
   workflow_dispatch:
   push:
@@ -18,6 +24,8 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      PROJECT: ${{ github.ref_name == 'main' && 'line-harness-liff-prod' || 'line-harness-liff' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -29,11 +37,22 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter liff build
 
-      - uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: apps/liff
-          command: pages deploy dist --project-name=${{ github.ref_name == 'main' && 'line-crm-liff-prod' || 'line-crm-liff' }} --branch=main
+      - name: Build LIFF
+        run: pnpm --filter liff build
+        env:
+          VITE_API_BASE: ${{ github.ref_name == 'main' && vars.LIFF_API_BASE_PROD || 'https://line-harness-staging.kei-01261026.workers.dev' }}
+
+      - name: Ensure Pages project exists
+        working-directory: apps/liff
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler pages project create "$PROJECT" --production-branch main || echo "project already exists (or create skipped)"
+
+      - name: Deploy to Pages
+        working-directory: apps/liff
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler pages deploy dist --project-name "$PROJECT" --branch main
