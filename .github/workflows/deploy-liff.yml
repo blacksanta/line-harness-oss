@@ -1,0 +1,39 @@
+name: Deploy LIFF
+
+# Configure CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets to enable auto-deploy.
+# apps/liff (Cloudflare Pages: line-crm-liff) は deploy-worker.yml / deploy-pages.yml の
+# 対象外なので独立ワークフローでデプロイする。
+# - staging ブランチ → line-crm-liff（staging 用 Pages プロジェクト）
+# - main ブランチ    → line-crm-liff-prod（本番用 Pages プロジェクト）
+# どちらも各プロジェクトの production デプロイ（--branch=main）を更新する。
+# 既存コードを手動で反映したいときは Actions の workflow_dispatch から実行する。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, staging]
+    paths:
+      - 'apps/liff/**'
+      - '.github/workflows/deploy-liff.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter liff build
+
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/liff
+          command: pages deploy dist --project-name=${{ github.ref_name == 'main' && 'line-crm-liff-prod' || 'line-crm-liff' }} --branch=main
