@@ -252,6 +252,11 @@ app.get('/r/:ref', async (c) => {
   if (page && PAGE_PASSTHROUGH_ALLOWED.has(page)) liffParams.set('page', page);
   const id = c.req.query('id');
   if (id) liffParams.set('id', id);
+  // page=salon-book のときだけ menu_id をパススルー（event ページに渡らないよう allowlist 厳格化）。
+  if (page === 'salon-book') {
+    const menuId = c.req.query('menu_id');
+    if (menuId) liffParams.set('menu_id', menuId);
+  }
   const liffTarget = liffParams.toString() ? `${liffUrl}?${liffParams.toString()}` : liffUrl;
 
   // Help link carries the *resolved* liff target as `t=` so the help page
@@ -536,6 +541,11 @@ app.get('/o', async (c) => {
   if (page && PAGE_PASSTHROUGH_ALLOWED.has(page)) liffParams.set('page', page);
   const id = c.req.query('id');
   if (id) liffParams.set('id', id);
+  // page=salon-book のときだけ menu_id をパススルー（event ページに渡らないよう allowlist 厳格化）。
+  if (page === 'salon-book') {
+    const menuId = c.req.query('menu_id');
+    if (menuId) liffParams.set('menu_id', menuId);
+  }
   const liffTarget = `https://liff.line.me/${liffId}?${liffParams.toString()}`;
 
   const ua = (c.req.header('user-agent') || '').toLowerCase();
@@ -637,15 +647,21 @@ app.get('/lp/:slug', async (c) => {
     );
   }
 
-  // line_account_id から LIFF ID を解決。未設定なら env.LIFF_URL から ID を抽出。
-  let liffId = '';
+  // LP公開ページHTML自身の起動用 LIFF と、予約ボタンの遷移先用 LIFF は別物として扱う。
+  // LIFF SDK は endpoint URL と現在URLが不一致だと endpoint へ強制リダイレクトするため、
+  // 同じ liffId を「LP公開ページ用」と「予約ページ用」の両方に使うと無限ループする。
+  //
+  //  - lpLiffId: 常に env.LIFF_URL の LP用LIFF（endpoint は /lp/* を含むドメイン）。
+  //  - reservationLiffId: lp.line_account_id のアカウントが持つ liff_id（予約ページの
+  //    endpoint = apps/liff の Pages デプロイを指している前提）。解決できなければ
+  //    空文字を返し、公開ページ側で予約ボタンを無効化する。
+  const liffMatch = (c.env.LIFF_URL || '').match(/liff\.line\.me\/([0-9]+-[A-Za-z0-9]+)/);
+  const lpLiffId = liffMatch ? liffMatch[1] : '';
+
+  let reservationLiffId = '';
   if (lp.line_account_id) {
     const account = await getLineAccountById(c.env.DB, lp.line_account_id);
-    if (account?.liff_id) liffId = account.liff_id;
-  }
-  if (!liffId) {
-    const m = (c.env.LIFF_URL || '').match(/liff\.line\.me\/([0-9]+-[A-Za-z0-9]+)/);
-    if (m) liffId = m[1];
+    if (account?.liff_id) reservationLiffId = account.liff_id;
   }
 
   return c.html(
@@ -674,6 +690,7 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 .btn{display:inline-block;padding:14px 28px;border-radius:8px;text-decoration:none;font-weight:700;line-height:1.2}
 .btn-primary{background:#06C755;color:#fff}
 .btn-secondary{background:#f1f5f9;color:#0f172a}
+.btn-disabled{opacity:.5;pointer-events:none;cursor:not-allowed}
 .block-divider{margin:24px 0;border:none;border-top:1px solid #e2e8f0}
 .body img{max-width:100%;height:auto;border-radius:8px;margin:16px 0}
 .body h1,.body h2,.body h3{margin:24px 0 12px;font-weight:700;color:#0f172a}
@@ -707,12 +724,14 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 </div>
 <script>
 window.__LP_SLUG__ = ${JSON.stringify(slug)};
-window.__LIFF_ID__ = ${JSON.stringify(liffId)};
+window.__LIFF_ID__ = ${JSON.stringify(lpLiffId)};
+window.__RESERVATION_LIFF_ID__ = ${JSON.stringify(reservationLiffId)};
 </script>
 <script>
 (function(){
   var SLUG = window.__LP_SLUG__;
   var LIFF_ID = window.__LIFF_ID__;
+  var RESERVATION_LIFF_ID = window.__RESERVATION_LIFF_ID__;
   var app = document.getElementById('app');
 
   function fail(msg){ app.className=''; app.innerHTML = '<div class="loading">'+msg+'</div>'; }
@@ -787,17 +806,25 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
         return '<div class="block-button"><a class="' + cls + '" href="' + escapeHtml(safeUrl(block.href)) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(block.label || '') + '</a></div>';
       }
       case 'reservation': {
+        // 予約ボタンは「予約用LIFF」を使う。LP に line_account_id が無く worker 側で
+        // 解決できなければ RESERVATION_LIFF_ID が空文字になり、ここでボタンを無効化する
+        // （クリックしても遷移せず、視覚的に押せないように見せる）。
+        var hasResLiff = !!RESERVATION_LIFF_ID;
         var rHref = '#';
-        if(LIFF_ID){
+        if(hasResLiff){
           if(block.reservationType === 'salon'){
-            rHref = '/o?liffId=' + encodeURIComponent(LIFF_ID) + '&page=salon-book'
+            rHref = '/o?liffId=' + encodeURIComponent(RESERVATION_LIFF_ID) + '&page=salon-book'
                   + (block.menuId ? '&menu_id=' + encodeURIComponent(block.menuId) : '');
           } else if(block.eventId){
-            rHref = '/o?liffId=' + encodeURIComponent(LIFF_ID) + '&page=event&id=' + encodeURIComponent(block.eventId);
+            rHref = '/o?liffId=' + encodeURIComponent(RESERVATION_LIFF_ID) + '&page=event&id=' + encodeURIComponent(block.eventId);
           }
         }
         var rCls = block.style === 'secondary' ? 'btn btn-secondary' : 'btn btn-primary';
-        return '<div class="block-button"><a class="' + rCls + '" href="' + escapeHtml(rHref) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(block.label || '') + '</a></div>';
+        if(!hasResLiff) rCls += ' btn-disabled';
+        var rAttrs = hasResLiff
+          ? ' href="' + escapeHtml(rHref) + '" target="_blank" rel="noopener noreferrer"'
+          : ' href="#" aria-disabled="true" onclick="event.preventDefault();return false;"';
+        return '<div class="block-button"><a class="' + rCls + '"' + rAttrs + '>' + escapeHtml(block.label || '') + '</a></div>';
       }
       case 'divider':
         return '<hr class="block-divider">';

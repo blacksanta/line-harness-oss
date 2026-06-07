@@ -110,6 +110,17 @@ lpPages.post('/api/lp-pages', async (c) => {
       }
       finalBlocks = deriveBlocksFromLegacy(body.videoUrl ?? null, body.body ?? null);
     }
+
+    // 予約ブロックは公開ページで「予約用LIFF」を解決するため line_account_id が必要。
+    // 未指定で保存すると公開ページでボタンが無効化されるので保存時点で弾く。
+    const hasReservation = finalBlocks.some((b) => b.type === 'reservation');
+    if (hasReservation && !body.lineAccountId) {
+      return c.json(
+        { success: false, error: 'lineAccountId is required when blocks contain a reservation' },
+        400,
+      );
+    }
+
     const legacy = deriveLegacyFromBlocks(finalBlocks);
 
     if ((body.accessWindowMode === 'relative' || body.accessWindowMode === 'both') && !body.relativeDaysAfterFriendAdd) {
@@ -206,6 +217,18 @@ lpPages.put('/api/lp-pages/:id', async (c) => {
         : deriveBlocksFromLegacy(existing.video_url, existing.body);
     if (finalBlocks.length === 0) {
       return c.json({ success: false, error: 'blocks (or videoUrl/body) must not be empty' }, 400);
+    }
+
+    // POST と同様、reservation ブロックを残すなら lineAccountId が必須。
+    // updates に lineAccountId が含まれていればそれを、そうでなければ既存値を見る。
+    const hasReservation = finalBlocks.some((b) => b.type === 'reservation');
+    const nextLineAccountId =
+      'lineAccountId' in updates ? (updates.lineAccountId as string | null | undefined) : existing.line_account_id;
+    if (hasReservation && !nextLineAccountId) {
+      return c.json(
+        { success: false, error: 'lineAccountId is required when blocks contain a reservation' },
+        400,
+      );
     }
 
     const updated = await updateLpPage(c.env.DB, id, updates as never);

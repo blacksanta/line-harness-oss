@@ -70,6 +70,11 @@ export default function LpForm({ form, onChange, accounts, mode }: Props) {
               <option key={a.id} value={a.id}>{a.name}</option>
             ))}
           </select>
+          {form.blocks.some((b) => b.type === 'reservation') && !form.lineAccountId.trim() && (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mt-2">
+              予約ブロックを使う場合、LINEアカウントの指定が必要です。指定しないと公開時に予約ボタンが無効化されます。
+            </p>
+          )}
         </div>
 
         <label className="flex items-center gap-2 text-sm text-gray-700">
