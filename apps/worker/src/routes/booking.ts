@@ -496,7 +496,7 @@ booking.get('/api/liff/booking/me', async (c) => {
          INNER JOIN staff s ON s.id = b.staff_id
         WHERE b.friend_id = ? AND b.line_account_id = ?
           AND (b.status NOT IN ('requested','confirmed') OR b.starts_at < ?)
-        ORDER BY b.starts_at DESC
+        ORDER BY b.requested_at DESC
         LIMIT 50`,
     )
     .bind(friendId, accountId, new Date().toISOString())
@@ -972,8 +972,8 @@ booking.get('/api/booking/admin/requests', async (c) => {
          INNER JOIN staff s ON s.id = b.staff_id
          LEFT JOIN friends f ON f.id = b.friend_id
         WHERE b.line_account_id = ?
-        ORDER BY b.starts_at ASC
-        LIMIT 200`
+        ORDER BY b.requested_at DESC
+        LIMIT 500`
     : `SELECT b.*,
               m.name AS menu_name,
               s.display_name AS staff_name,
@@ -983,8 +983,8 @@ booking.get('/api/booking/admin/requests', async (c) => {
          INNER JOIN staff s ON s.id = b.staff_id
          LEFT JOIN friends f ON f.id = b.friend_id
         WHERE b.line_account_id = ? AND b.status = ?
-        ORDER BY b.starts_at ASC
-        LIMIT 200`;
+        ORDER BY b.starts_at DESC
+        LIMIT 500`;
   const stmt = c.env.DB.prepare(sql);
   const rows = await (status === 'all' || !status
     ? (status === 'all' ? stmt.bind(accountId) : stmt.bind(accountId, 'requested'))
