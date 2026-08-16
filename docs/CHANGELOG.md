@@ -9,7 +9,7 @@
 
 ### Upgrade
 ```bash
-wrangler d1 execute line-crm --file=packages/db/migrations/008_multi_account.sql --remote
+wrangler d1 execute your-database --file=packages/db/migrations/008_multi_account.sql --remote
 ```
 
 ### New Features

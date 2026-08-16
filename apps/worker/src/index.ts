@@ -1,13 +1,27 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { LineClient } from '@line-crm/line-sdk';
-import { getLineAccounts, getTrafficPoolBySlug, getRandomPoolAccount, getPoolAccounts } from '@line-crm/db';
+import {
+  getLineAccounts,
+  getTrafficPoolBySlug,
+  getTrafficPoolById,
+  getRandomPoolAccount,
+  getPoolAccounts,
+  getEntryRouteByRefCode,
+} from '@line-crm/db';
 import { processStepDeliveries } from './services/step-delivery.js';
 import { processScheduledBroadcasts, processQueuedBroadcasts } from './services/broadcast.js';
 import { processReminderDeliveries } from './services/reminder-delivery.js';
 import { checkAccountHealth } from './services/ban-monitor.js';
 import { refreshLineAccessTokens } from './services/token-refresh.js';
 import { processInsightFetch } from './services/insight-fetcher.js';
+import { processDueReminders } from './services/booking-reminders.js';
+import { runExpirer } from './services/booking-expirer.js';
+import { processDueEventReminders } from './services/event-booking-reminders.js';
+import { runEventBookingExpirer } from './services/event-booking-expirer.js';
+import { sendEventBookingNotification } from './services/event-booking-notifier.js';
+import { sendBookingNotification } from './services/booking-notifier.js';
+import { DEFAULT_ACCOUNT_SETTINGS } from './services/booking-types.js';
 import { authMiddleware } from './middleware/auth.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
 import { webhook } from './routes/webhook.js';
@@ -19,6 +33,9 @@ import { users } from './routes/users.js';
 import { lineAccounts } from './routes/line-accounts.js';
 import { conversions } from './routes/conversions.js';
 import { affiliates } from './routes/affiliates.js';
+import { duplicates } from './routes/duplicates.js';
+import { usersGrouped } from './routes/users-grouped.js';
+import { inbox } from './routes/inbox.js';
 import { openapi } from './routes/openapi.js';
 import { liffRoutes } from './routes/liff.js';
 // Round 3 ルート
@@ -29,12 +46,15 @@ import { scoring } from './routes/scoring.js';
 import { templates } from './routes/templates.js';
 import { chats } from './routes/chats.js';
 import { conversations } from './routes/conversations.js';
-import { notifications } from './routes/notifications.js';
+// notifications ルート (notification_rules CRUD + notifications 一覧) は
+// インボックス機能 (/api/inbox/unanswered) に置き換えたため削除。
+// DB テーブル notification_rules / notifications は archive 目的で残してある。
 import { stripe } from './routes/stripe.js';
 import { health } from './routes/health.js';
 import { automations } from './routes/automations.js';
 import { richMenus } from './routes/rich-menus.js';
 import { trackedLinks } from './routes/tracked-links.js';
+import { entryRoutes } from './routes/entry-routes.js';
 import { forms } from './routes/forms.js';
 import { adPlatforms } from './routes/ad-platforms.js';
 import { staff } from './routes/staff.js';
@@ -43,11 +63,23 @@ import { images } from './routes/images.js';
 import { accountSettings } from './routes/account-settings.js';
 import { setup } from './routes/setup.js';
 import { autoReplies } from './routes/auto-replies.js';
+import booking from './routes/booking.js';
+import events from './routes/events.js';
 import { trafficPools } from './routes/traffic-pools.js';
 import { meetCallback } from './routes/meet-callback.js';
 import { messageTemplates } from './routes/message-templates.js';
 import { lpPages } from './routes/lp-pages.js';
 import { getLpPageBySlug, getLineAccountById } from '@line-crm/db';
+import dedupPreview from './routes/dedup-preview.js';
+import { profileRefresh } from './routes/profile-refresh.js';
+import { richMenuGroups } from './routes/rich-menu-groups.js';
+import { isLinkPreviewBot } from './lib/og-bot.js';
+import { buildOgHtml } from './lib/og-html.js';
+import {
+  resolveOgForEvent,
+  resolveOgForForm,
+  resolveOgForAccount,
+} from './lib/og-resolver.js';
 
 export type Env = {
   Bindings: {
@@ -93,6 +125,9 @@ app.route('/', users);
 app.route('/', lineAccounts);
 app.route('/', conversions);
 app.route('/', affiliates);
+app.route('/', duplicates);
+app.route('/', usersGrouped);
+app.route('/', inbox);
 app.route('/', openapi);
 app.route('/', liffRoutes);
 
@@ -104,12 +139,12 @@ app.route('/', scoring);
 app.route('/', templates);
 app.route('/', chats);
 app.route('/', conversations);
-app.route('/', notifications);
 app.route('/', stripe);
 app.route('/', health);
 app.route('/', automations);
 app.route('/', richMenus);
 app.route('/', trackedLinks);
+app.route('/', entryRoutes);
 app.route('/', forms);
 app.route('/', adPlatforms);
 app.route('/', staff);
@@ -118,10 +153,15 @@ app.route('/', images);
 app.route('/', setup);
 app.route('/', autoReplies);
 app.route('/', trafficPools);
+app.route('/', booking);
+app.route('/', events);
 app.route('/', accountSettings);
 app.route('/', meetCallback);
 app.route('/', messageTemplates);
 app.route('/', lpPages);
+app.route('/', dedupPreview);
+app.route('/', profileRefresh);
+app.route('/', richMenuGroups);
 
 // Self-hosted QR code proxy — prevents leaking ref tokens to third-party services
 app.get('/api/qr', async (c) => {
@@ -148,10 +188,35 @@ app.get('/r/:ref', async (c) => {
   const ref = c.req.param('ref');
   const formId = c.req.query('form') || '';
 
-  // Resolve LIFF URL from pool (same logic as /auth/line)
+  // Resolve LIFF URL — priority:
+  //   1. entry_route.pool_id (if ref maps to a referral link)
+  //   2. URL query ?pool=
+  //   3. 'main' fallback
   let liffUrl = c.env.LIFF_URL;
-  const poolSlug = c.req.query('pool') || 'main';
-  const pool = await getTrafficPoolBySlug(c.env.DB, poolSlug);
+  let pool: Awaited<ReturnType<typeof getTrafficPoolBySlug>> | null = null;
+
+  // 1. entry_route lookup. getTrafficPoolById (unlike getTrafficPoolBySlug)
+  // does not filter on is_active, so we ignore disabled pools explicitly to
+  // honor the operator's pause action.
+  //
+  // NOTE: we intentionally do NOT record a ref_tracking row here. The
+  // /auth/callback + /api/liff/link path already writes a tracking row when
+  // OAuth/LIFF completes, and writing a second landing-page row would
+  // double-count every successful click in getEntryRouteFunnel. Landing-page
+  // drop-off (clicks that never reach OAuth) is therefore not visible in the
+  // funnel; that limitation is intentional pending a dedicated click table.
+  const route = await getEntryRouteByRefCode(c.env.DB, ref);
+  if (route?.pool_id) {
+    const candidate = await getTrafficPoolById(c.env.DB, route.pool_id);
+    if (candidate?.is_active) pool = candidate;
+  }
+
+  // 2 / 3. fallback to URL query or 'main'
+  if (!pool) {
+    const poolSlug = c.req.query('pool') || 'main';
+    pool = await getTrafficPoolBySlug(c.env.DB, poolSlug);
+  }
+
   if (pool) {
     const account = await getRandomPoolAccount(c.env.DB, pool.id);
     if (account) {
@@ -176,6 +241,22 @@ app.get('/r/:ref', async (c) => {
   if (xh) liffParams.set('xh', xh);
   const ig = c.req.query('ig');
   if (ig) liffParams.set('ig', ig);
+  // LIFF in-app navigation passthrough — OpenChat strips raw liff.line.me
+  // URLs, so we accept `page` / `id` here and forward them to the resolved
+  // LIFF target. Limited to pages whose client initializer enforces the
+  // friend-add gate (initSalonBooking, initEventBooking); page=book/form
+  // would bypass that gate and bypass ref-based attribution, so they are
+  // intentionally excluded until those initializers are unified.
+  const PAGE_PASSTHROUGH_ALLOWED = new Set(['salon-book', 'event', 'event-me']);
+  const page = c.req.query('page');
+  if (page && PAGE_PASSTHROUGH_ALLOWED.has(page)) liffParams.set('page', page);
+  const id = c.req.query('id');
+  if (id) liffParams.set('id', id);
+  // page=salon-book のときだけ menu_id をパススルー（event ページに渡らないよう allowlist 厳格化）。
+  if (page === 'salon-book') {
+    const menuId = c.req.query('menu_id');
+    if (menuId) liffParams.set('menu_id', menuId);
+  }
   const liffTarget = liffParams.toString() ? `${liffUrl}?${liffParams.toString()}` : liffUrl;
 
   // Help link carries the *resolved* liff target as `t=` so the help page
@@ -437,6 +518,115 @@ ${longPressBlock}
 </html>`);
 });
 
+// /o — `/r/:ref` の ref 解決・追跡を一切行わない明示 liffId 版の open page。
+// admin UI が OpenChat / IG DM 等で `liff.line.me` を弾かれるチャネル向けに
+// 配布するラップ URL のためのルート。`/r/main` を使うと (a) traffic_pool の
+// ランダム pool account に再解決されて選択中アカウントから外れる、
+// (b) `ref=main` として ref_tracking / friends.ref_code に書き込まれて
+// attribution を汚染する、という 2 つの問題があるため別ルートに分けている。
+// 仕様:
+// - クエリ: liffId (必須, `<digits>-<id>` 形式) / page / id
+// - page は `/r/:ref` と同じ allowlist (salon-book / event / event-me)
+// - mobile UA は「LINEで開く」ボタン、desktop は QR を返す (`/r/:ref` 同等)
+app.get('/o', async (c) => {
+  const liffId = c.req.query('liffId') || '';
+  if (!/^[0-9]+-[A-Za-z0-9]+$/.test(liffId)) {
+    return c.text('Invalid liffId', 400);
+  }
+
+  const liffParams = new URLSearchParams();
+  liffParams.set('liffId', liffId);
+  const PAGE_PASSTHROUGH_ALLOWED = new Set(['salon-book', 'event', 'event-me']);
+  const page = c.req.query('page');
+  if (page && PAGE_PASSTHROUGH_ALLOWED.has(page)) liffParams.set('page', page);
+  const id = c.req.query('id');
+  if (id) liffParams.set('id', id);
+  // page=salon-book のときだけ menu_id をパススルー（event ページに渡らないよう allowlist 厳格化）。
+  if (page === 'salon-book') {
+    const menuId = c.req.query('menu_id');
+    if (menuId) liffParams.set('menu_id', menuId);
+  }
+  const liffTarget = `https://liff.line.me/${liffId}?${liffParams.toString()}`;
+
+  const ua = (c.req.header('user-agent') || '').toLowerCase();
+  const isMobile = /iphone|ipad|android|mobile/.test(ua);
+  const isIOS = /iphone|ipad|ipod/.test(ua);
+  const isAndroid = /android/.test(ua);
+
+  if (isMobile) {
+    const liffPath = liffTarget.replace(/^https:\/\//, '');
+    const intentFallback = encodeURIComponent(liffTarget);
+    const androidIntent = `intent://${liffPath}#Intent;scheme=https;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;package=jp.naver.line.android;S.browser_fallback_url=${intentFallback};end`;
+    const buttonHref = isAndroid ? androidIntent : liffTarget;
+    const longPressHint = isIOS
+      ? '<p class="hint">※開かない場合はボタンを<strong>長押し</strong>して「LINEで開く」を選択</p>'
+      : '';
+    return c.html(`<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LINE で開く</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;background:#f5f7f5;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.card{background:#fff;border-radius:20px;box-shadow:0 2px 20px rgba(0,0,0,0.06);text-align:center;max-width:360px;width:90%;padding:40px 28px 32px;border:1px solid rgba(0,0,0,0.04)}
+.line-icon{width:48px;height:48px;margin:0 auto 20px}
+.line-icon svg{width:48px;height:48px}
+.msg{font-size:15px;color:#444;font-weight:500;margin-bottom:28px;line-height:1.6}
+.btn{display:block;width:100%;padding:16px;border:none;border-radius:12px;font-size:16px;font-weight:700;text-decoration:none;text-align:center;color:#fff;background:#06C755;box-shadow:0 2px 12px rgba(6,199,85,0.2);transition:all .15s}
+.btn:active{transform:scale(0.98);opacity:.9}
+.hint{font-size:11px;color:#888;margin-top:10px;line-height:1.6}
+.hint strong{color:#06C755;font-weight:700}
+</style>
+</head>
+<body>
+<div class="card">
+<div class="line-icon">
+<svg viewBox="0 0 48 48" fill="none"><rect width="48" height="48" rx="12" fill="#06C755"/><path d="M24 12C17.37 12 12 16.58 12 22.2c0 3.54 2.35 6.65 5.86 8.47-.2.74-.76 2.75-.87 3.17-.14.55.2.54.42.39.18-.12 2.84-1.88 4-2.65.84.13 1.7.22 2.59.22 6.63 0 12-4.58 12-10.2S30.63 12 24 12z" fill="#fff"/></svg>
+</div>
+<p class="msg">LINE で開く</p>
+<a href="${buttonHref}" class="btn">LINEで開く</a>
+${longPressHint}
+</div>
+</body>
+</html>`);
+  }
+
+  return c.html(`<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LINE で開く</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;background:#f5f7f5;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.card{background:#fff;border-radius:20px;box-shadow:0 2px 20px rgba(0,0,0,0.06);text-align:center;max-width:480px;width:90%;padding:48px;border:1px solid rgba(0,0,0,0.04)}
+.line-icon{width:48px;height:48px;margin:0 auto 20px}
+.line-icon svg{width:48px;height:48px}
+.msg{font-size:15px;color:#444;font-weight:500;margin-bottom:32px;line-height:1.6}
+.qr{background:#f9f9f9;border-radius:16px;padding:24px;display:inline-block;margin-bottom:24px;border:1px solid rgba(0,0,0,0.04)}
+.qr img{display:block;width:240px;height:240px}
+.hint{font-size:13px;color:#999;line-height:1.6}
+</style>
+</head>
+<body>
+<div class="card">
+<div class="line-icon">
+<svg viewBox="0 0 48 48" fill="none"><rect width="48" height="48" rx="12" fill="#06C755"/><path d="M24 12C17.37 12 12 16.58 12 22.2c0 3.54 2.35 6.65 5.86 8.47-.2.74-.76 2.75-.87 3.17-.14.55.2.54.42.39.18-.12 2.84-1.88 4-2.65.84.13 1.7.22 2.59.22 6.63 0 12-4.58 12-10.2S30.63 12 24 12z" fill="#fff"/></svg>
+</div>
+<p class="msg">スマートフォンで QR コードを読み取ってください</p>
+<div class="qr">
+<img src="/api/qr?size=240x240&data=${encodeURIComponent(liffTarget)}" alt="QR Code">
+</div>
+<p class="hint">LINE アプリのカメラまたは<br>スマートフォンのカメラで読み取れます</p>
+</div>
+</body>
+</html>`);
+});
+
+// Convenience redirect for /book path
 // 視聴期限付きLP（UTAGE風）— LIFFラッパHTMLを返す。コンテンツ本体は中で /api/lp-pages/:id/check-access から取りに行く。
 app.get('/lp/:slug', async (c) => {
   const slug = c.req.param('slug');
@@ -457,15 +647,21 @@ app.get('/lp/:slug', async (c) => {
     );
   }
 
-  // line_account_id から LIFF ID を解決。未設定なら env.LIFF_URL から ID を抽出。
-  let liffId = '';
+  // LP公開ページHTML自身の起動用 LIFF と、予約ボタンの遷移先用 LIFF は別物として扱う。
+  // LIFF SDK は endpoint URL と現在URLが不一致だと endpoint へ強制リダイレクトするため、
+  // 同じ liffId を「LP公開ページ用」と「予約ページ用」の両方に使うと無限ループする。
+  //
+  //  - lpLiffId: 常に env.LIFF_URL の LP用LIFF（endpoint は /lp/* を含むドメイン）。
+  //  - reservationLiffId: lp.line_account_id のアカウントが持つ liff_id（予約ページの
+  //    endpoint = apps/liff の Pages デプロイを指している前提）。解決できなければ
+  //    空文字を返し、公開ページ側で予約ボタンを無効化する。
+  const liffMatch = (c.env.LIFF_URL || '').match(/liff\.line\.me\/([0-9]+-[A-Za-z0-9]+)/);
+  const lpLiffId = liffMatch ? liffMatch[1] : '';
+
+  let reservationLiffId = '';
   if (lp.line_account_id) {
     const account = await getLineAccountById(c.env.DB, lp.line_account_id);
-    if (account?.liff_id) liffId = account.liff_id;
-  }
-  if (!liffId) {
-    const m = (c.env.LIFF_URL || '').match(/liff\.line\.me\/([0-9]+-[A-Za-z0-9]+)/);
-    if (m) liffId = m[1];
+    if (account?.liff_id) reservationLiffId = account.liff_id;
   }
 
   return c.html(
@@ -478,20 +674,24 @@ app.get('/lp/:slug', async (c) => {
 <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
-<script src="https://www.youtube.com/iframe_api"></script>
+<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
+<script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;background:#fafafa;color:#1e293b;line-height:1.7}
 .wrap{max-width:780px;margin:0 auto;padding:24px 16px}
 .loading{text-align:center;padding:80px 20px;color:#888}
-.video-wrap{position:relative;padding-bottom:56.25%;height:0;border-radius:12px;overflow:hidden;background:#000;box-shadow:0 4px 24px rgba(0,0,0,0.08)}
-.video-wrap iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0;pointer-events:none}
-.video-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;cursor:pointer;background-color:#000;background-size:cover;background-position:center;transition:opacity 0.3s}
-.video-overlay.playing{opacity:0;pointer-events:none}
-.play-btn{width:84px;height:84px;border-radius:50%;background:rgba(0,0,0,0.6);border:2px solid rgba(255,255,255,0.95);display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;box-shadow:0 4px 20px rgba(0,0,0,0.4)}
-.play-btn svg{margin-left:6px}
-.video-overlay:hover .play-btn{background:rgba(0,0,0,0.8)}
-.title{font-size:22px;font-weight:700;margin:24px 0 12px;color:#0f172a}
+.video-wrap{position:relative;padding-bottom:56.25%;height:0;border-radius:12px;overflow:hidden;background:#000;box-shadow:0 4px 24px rgba(0,0,0,0.08);margin:16px 0}
+.video-wrap > iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0}
+.video-wrap .plyr{position:absolute;inset:0;width:100%;height:100%;border-radius:12px;overflow:hidden}
+.block-image{margin:16px 0;text-align:center}
+.block-image img{max-width:100%;height:auto;border-radius:8px}
+.block-button{text-align:center;margin:24px 0}
+.btn{display:inline-block;padding:14px 28px;border-radius:8px;text-decoration:none;font-weight:700;line-height:1.2}
+.btn-primary{background:#06C755;color:#fff}
+.btn-secondary{background:#f1f5f9;color:#0f172a}
+.btn-disabled{opacity:.5;pointer-events:none;cursor:not-allowed}
+.block-divider{margin:24px 0;border:none;border-top:1px solid #e2e8f0}
 .body img{max-width:100%;height:auto;border-radius:8px;margin:16px 0}
 .body h1,.body h2,.body h3{margin:24px 0 12px;font-weight:700;color:#0f172a}
 .body h1{font-size:24px}.body h2{font-size:20px}.body h3{font-size:17px}
@@ -501,6 +701,21 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 .body blockquote{border-left:4px solid #06C755;padding:8px 16px;background:#f0fdf4;margin:16px 0;color:#475569}
 .body code{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-family:ui-monospace,monospace;font-size:13px}
 .body pre{background:#f1f5f9;padding:12px;border-radius:8px;overflow-x:auto;margin:16px 0}
+.countdown{margin:24px 0 8px;text-align:center}
+.countdown-title{font-size:1.25rem;font-weight:700;margin-bottom:12px;color:#0f172a}
+.countdown-grid{display:flex;gap:14px;justify-content:center;flex-wrap:nowrap}
+.countdown-cell{display:flex;flex-direction:column;align-items:center}
+.countdown-num{background:#E85C3A;color:#fff;border-radius:8px;padding:14px 20px;font-size:1.75rem;font-weight:700;box-shadow:0 2px 4px rgba(0,0,0,.15);min-width:64px;text-align:center;font-variant-numeric:tabular-nums}
+.countdown-label{font-size:.78rem;color:#64748b;margin-top:6px}
+.lp-gate-hint{margin:24px 0;padding:20px 16px;text-align:center;background:#f1f5f9;border:1px dashed #cbd5e1;border-radius:12px;color:#475569;font-size:14px;font-weight:600}
+.lp-gate-hint .lp-gate-lock{font-size:20px;display:block;margin-bottom:6px}
+.lp-gate-reveal{animation:lpGateFade .6s ease}
+@keyframes lpGateFade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@media(max-width:480px){
+.countdown-num{font-size:1.35rem;padding:10px 12px;min-width:46px}
+.countdown-title{font-size:1.05rem}
+.countdown-grid{gap:8px}
+}
 </style>
 </head>
 <body>
@@ -509,15 +724,30 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 </div>
 <script>
 window.__LP_SLUG__ = ${JSON.stringify(slug)};
-window.__LIFF_ID__ = ${JSON.stringify(liffId)};
+window.__LIFF_ID__ = ${JSON.stringify(lpLiffId)};
+window.__RESERVATION_LIFF_ID__ = ${JSON.stringify(reservationLiffId)};
 </script>
 <script>
 (function(){
   var SLUG = window.__LP_SLUG__;
   var LIFF_ID = window.__LIFF_ID__;
+  var RESERVATION_LIFF_ID = window.__RESERVATION_LIFF_ID__;
   var app = document.getElementById('app');
 
   function fail(msg){ app.className=''; app.innerHTML = '<div class="loading">'+msg+'</div>'; }
+
+  function escapeHtml(s){
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+
+  function safeUrl(u){
+    if(!u) return '#';
+    var t = String(u).trim().toLowerCase();
+    if(t.indexOf('javascript:') === 0 || t.indexOf('data:') === 0 || t.indexOf('vbscript:') === 0) return '#';
+    return u;
+  }
 
   function youtubeId(url){
     if(!url) return null;
@@ -525,70 +755,299 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
     return m ? m[1] : null;
   }
 
-  function videoEmbedUrl(url){
+  function vimeoId(url){
     if(!url) return null;
-    var ytId = youtubeId(url);
-    if(ytId) return 'https://www.youtube.com/embed/' + ytId + '?enablejsapi=1&controls=0&disablekb=1&fs=0&modestbranding=1&rel=0&iv_load_policy=3&playsinline=1&color=white&origin=' + encodeURIComponent(location.origin);
     var m = url.match(/vimeo\\.com\\/(?:video\\/)?(\\d+)/);
-    if(m) return 'https://player.vimeo.com/video/' + m[1];
+    return m ? m[1] : null;
+  }
+
+  function videoEmbedUrl(url, ytId, vmId){
+    if(!url) return null;
+    if(ytId) return 'https://www.youtube.com/embed/' + ytId + '?playsinline=1';
+    if(vmId) return 'https://player.vimeo.com/video/' + vmId;
     return url; // fallback: そのまま埋め込み
   }
 
-  var ytPlayer = null;
-  function initYouTubePlayer(){
-    if(!window.YT || !window.YT.Player){
-      window.onYouTubeIframeAPIReady = createYouTubePlayer;
-      return;
-    }
-    createYouTubePlayer();
-  }
-  function createYouTubePlayer(){
-    var iframe = document.getElementById('yt-player');
-    var overlay = document.getElementById('video-overlay');
-    if(!iframe || !overlay) return;
-    ytPlayer = new YT.Player('yt-player', {
-      events: {
-        onStateChange: function(e){
-          if(e.data === YT.PlayerState.PLAYING){ overlay.classList.add('playing'); }
-          else { overlay.classList.remove('playing'); }
-        }
+  function renderBlock(block, index, plyrTargets){
+    if(!block || typeof block.type !== 'string') return '';
+    switch(block.type){
+      case 'markdown': {
+        var text = block.text || '';
+        var isHtml = /<\\/?[a-z][\\s\\S]*?>/i.test(text);
+        var raw = isHtml ? text : (window.marked ? window.marked.parse(text) : text);
+        var clean = window.DOMPurify
+          ? window.DOMPurify.sanitize(raw, { ADD_ATTR: ['style', 'target', 'rel'] })
+          : raw;
+        return '<div class="body">' + clean + '</div>';
       }
-    });
-    overlay.addEventListener('click', function(){
-      if(!ytPlayer || typeof ytPlayer.getPlayerState !== 'function') return;
-      var state = ytPlayer.getPlayerState();
-      if(state === YT.PlayerState.PLAYING){ ytPlayer.pauseVideo(); }
-      else { ytPlayer.playVideo(); }
-    });
+      case 'video': {
+        var ytId = youtubeId(block.url);
+        var vmId = ytId ? null : vimeoId(block.url);
+        var src = videoEmbedUrl(block.url, ytId, vmId);
+        var usePlyr = !!(ytId || vmId);
+        var pid = 'lp-player-' + index;
+        if(usePlyr){
+          plyrTargets.push({ selector: '#' + pid, ytId: ytId, index: index });
+          return '<div class="video-wrap"><div class="plyr__video-embed" id="' + pid + '">'
+               + '<iframe src="' + escapeHtml(src) + '" allowtransparency allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>'
+               + '</div></div>';
+        }
+        return '<div class="video-wrap"><iframe src="' + escapeHtml(src) + '" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></div>';
+      }
+      case 'image': {
+        var imgTag = '<img src="' + escapeHtml(safeUrl(block.url)) + '" alt="' + escapeHtml(block.alt || '') + '" loading="lazy">';
+        var inner = block.href
+          ? '<a href="' + escapeHtml(safeUrl(block.href)) + '" target="_blank" rel="noopener noreferrer">' + imgTag + '</a>'
+          : imgTag;
+        return '<div class="block-image">' + inner + '</div>';
+      }
+      case 'button': {
+        var cls = block.style === 'secondary' ? 'btn btn-secondary' : 'btn btn-primary';
+        return '<div class="block-button"><a class="' + cls + '" href="' + escapeHtml(safeUrl(block.href)) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(block.label || '') + '</a></div>';
+      }
+      case 'reservation': {
+        // 予約ボタンは「予約用LIFF」を使う。LP に line_account_id が無く worker 側で
+        // 解決できなければ RESERVATION_LIFF_ID が空文字になり、ここでボタンを無効化する
+        // （クリックしても遷移せず、視覚的に押せないように見せる）。
+        var hasResLiff = !!RESERVATION_LIFF_ID;
+        var rHref = '#';
+        if(hasResLiff){
+          if(block.reservationType === 'salon'){
+            rHref = '/o?liffId=' + encodeURIComponent(RESERVATION_LIFF_ID) + '&page=salon-book'
+                  + (block.menuId ? '&menu_id=' + encodeURIComponent(block.menuId) : '');
+          } else if(block.eventId){
+            rHref = '/o?liffId=' + encodeURIComponent(RESERVATION_LIFF_ID) + '&page=event&id=' + encodeURIComponent(block.eventId);
+          }
+        }
+        var rCls = block.style === 'secondary' ? 'btn btn-secondary' : 'btn btn-primary';
+        if(!hasResLiff) rCls += ' btn-disabled';
+        var rAttrs = hasResLiff
+          ? ' href="' + escapeHtml(rHref) + '" target="_blank" rel="noopener noreferrer"'
+          : ' href="#" aria-disabled="true" onclick="event.preventDefault();return false;"';
+        return '<div class="block-button"><a class="' + rCls + '"' + rAttrs + '>' + escapeHtml(block.label || '') + '</a></div>';
+      }
+      case 'divider':
+        return '<hr class="block-divider">';
+      case 'videoGateStart':
+      case 'videoGateEnd':
+        // ゲートの描画は render() 側でまとめて処理する（区間を隠すため）。
+        return '';
+      case 'countdown': {
+        var title = typeof block.title === 'string' && block.title ? block.title : '公開終了まであと…';
+        var showTitle = block.showTitle !== false;
+        var color = typeof block.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(block.color) ? block.color : '';
+        var styleAttr = color ? ' style="background:' + color + '"' : '';
+        var titleHtml = showTitle
+          ? '<p class="countdown-title">' + escapeHtml(title) + '</p>'
+          : '';
+        return '<div class="countdown" data-countdown="1" style="display:none" aria-live="off">'
+          +   titleHtml
+          +   '<div class="countdown-grid">'
+          +     '<div class="countdown-cell" data-unit="days"><div class="countdown-num"' + styleAttr + '>0</div><div class="countdown-label">日</div></div>'
+          +     '<div class="countdown-cell" data-unit="hours"><div class="countdown-num"' + styleAttr + '>00</div><div class="countdown-label">時間</div></div>'
+          +     '<div class="countdown-cell" data-unit="minutes"><div class="countdown-num"' + styleAttr + '>00</div><div class="countdown-label">分</div></div>'
+          +     '<div class="countdown-cell" data-unit="seconds"><div class="countdown-num"' + styleAttr + '>00</div><div class="countdown-label">秒</div></div>'
+          +   '</div>'
+          + '</div>';
+      }
+      default:
+        return '';
+    }
   }
 
-  var PLAY_ICON = '<svg viewBox="0 0 24 24" width="36" height="36" fill="white" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
+  function legacyFallbackBlocks(payload){
+    var arr = [];
+    if(payload.videoUrl) arr.push({ id:'legacy-v', type:'video', url: payload.videoUrl });
+    if(payload.body)     arr.push({ id:'legacy-b', type:'markdown', text: payload.body });
+    return arr;
+  }
+
+  function isTrackableVideo(b){
+    return b && b.type === 'video' && !!(youtubeId(b.url) || vimeoId(b.url));
+  }
+
+  function renderGate(gateBlock, minutes, trackVideoIndex, innerHtml){
+    var hint = (typeof gateBlock.hintText === 'string' && gateBlock.hintText)
+      ? gateBlock.hintText
+      : ('動画を' + minutes + '分視聴すると表示されます');
+    var gid = gateBlock.id || ('gate-' + trackVideoIndex);
+    return '<div class="lp-gate" data-gate="1" data-minutes="' + minutes
+      + '" data-video-index="' + trackVideoIndex + '" data-gate-id="' + escapeHtml(gid) + '">'
+      +   '<div class="lp-gate-hint"><span class="lp-gate-lock">🔒</span>' + escapeHtml(hint) + '</div>'
+      +   '<div class="lp-gate-content" style="display:none">' + innerHtml + '</div>'
+      + '</div>';
+  }
 
   function render(payload){
     app.className = '';
-    var html = '<h1 class="title">' + payload.name.replace(/[<>&]/g, function(c){return {'<':'&lt;','>':'&gt;','&':'&amp;'}[c];}) + '</h1>';
-    if(payload.contentType === 'video' && payload.videoUrl){
-      var src = videoEmbedUrl(payload.videoUrl);
-      var isYt = !!youtubeId(payload.videoUrl);
-      if(isYt){
-        var ytId = youtubeId(payload.videoUrl);
-        var thumb = 'https://img.youtube.com/vi/'+ytId+'/maxresdefault.jpg';
-        html += '<div class="video-wrap">'
-          + '<iframe id="yt-player" src="'+src+'" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>'
-          + '<div class="video-overlay" id="video-overlay" style="background-image:url(\\''+thumb+'\\')"><button type="button" class="play-btn" aria-label="再生">'+PLAY_ICON+'</button></div>'
-          + '</div>';
-      } else {
-        html += '<div class="video-wrap"><iframe src="'+src+'" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></div>';
-      }
-      app.innerHTML = html;
-      if(isYt) initYouTubePlayer();
-      return;
-    } else if(payload.contentType === 'page' && payload.body){
-      var raw = window.marked ? window.marked.parse(payload.body) : payload.body;
-      var clean = window.DOMPurify ? window.DOMPurify.sanitize(raw) : raw;
-      html += '<div class="body">' + clean + '</div>';
+    var html = '';
+
+    var blocks = (payload.blocks && payload.blocks.length) ? payload.blocks : legacyFallbackBlocks(payload);
+
+    // ── 動画ゲートの境界を特定（1ページ1組想定。最初の開始と、その後の最初の終了） ──
+    var startIdx = -1, endIdx = -1;
+    for(var s = 0; s < blocks.length; s++){
+      if(blocks[s] && blocks[s].type === 'videoGateStart' && startIdx < 0) startIdx = s;
+      if(blocks[s] && blocks[s].type === 'videoGateEnd' && startIdx >= 0 && s > startIdx){ endIdx = s; break; }
     }
+    var hasGate = startIdx >= 0 && endIdx > startIdx;
+
+    // 直近上のトラッキング可能な動画を探す（質問3-A）
+    var trackVideoIndex = -1;
+    if(hasGate){
+      for(var k = startIdx - 1; k >= 0; k--){
+        if(isTrackableVideo(blocks[k])){ trackVideoIndex = k; break; }
+      }
+    }
+    var gateTrackable = hasGate && trackVideoIndex >= 0;
+
+    var plyrTargets = [];
+    for(var i = 0; i < blocks.length; i++){
+      if(hasGate && i === startIdx){
+        var inner = '';
+        for(var j = startIdx + 1; j < endIdx; j++){
+          inner += renderBlock(blocks[j], j, plyrTargets);
+        }
+        if(gateTrackable){
+          html += renderGate(blocks[startIdx], blocks[startIdx].minutes || 1, trackVideoIndex, inner);
+        } else {
+          // フェイルオープン（質問14-B）: トラッキング不能なら最初から全部表示
+          html += inner;
+        }
+        i = endIdx; // 終了ゲートまでスキップ（ループの i++ で終了ゲートを飛ばす）
+        continue;
+      }
+      // 区間外に紛れたゲートマーカーは描画しない
+      if(blocks[i] && (blocks[i].type === 'videoGateStart' || blocks[i].type === 'videoGateEnd')) continue;
+      html += renderBlock(blocks[i], i, plyrTargets);
+    }
+
     app.innerHTML = html;
+
+    var players = {};
+    plyrTargets.forEach(function(t){
+      var p = new Plyr(t.selector, {
+        youtube: { noCookie: false, rel: 0, showinfo: 0, iv_load_policy: 3, modestbranding: 1, playsinline: 1 },
+        vimeo:   { byline: false, portrait: false, title: false }
+      });
+      if(t.ytId) p.poster = 'https://img.youtube.com/vi/' + t.ytId + '/maxresdefault.jpg';
+      players[t.index] = p;
+    });
+
+    setupGates(players);
+  }
+
+  // 動画ゲート: 指定分数の「実視聴時間」到達、または視聴完了で区間を開放（質問4-B / 質問15-B）。
+  function setupGates(players){
+    var gates = document.querySelectorAll('[data-gate]');
+    for(var i = 0; i < gates.length; i++){
+      (function(gate){
+        var minutes = parseInt(gate.getAttribute('data-minutes'), 10) || 1;
+        var thresholdSec = minutes * 60;
+        var vIndex = gate.getAttribute('data-video-index');
+        var gateId = gate.getAttribute('data-gate-id') || '';
+        var storeKey = 'lpgate:' + SLUG + ':' + gateId;
+        var hint = gate.querySelector('.lp-gate-hint');
+        var content = gate.querySelector('.lp-gate-content');
+
+        function open(){
+          if(!content || content.style.display !== 'none') return;
+          content.style.display = '';
+          content.className += ' lp-gate-reveal';
+          if(hint) hint.style.display = 'none';
+          try { localStorage.setItem(storeKey, '1'); } catch(e){}
+        }
+
+        // 一度開いたら以後も開いたまま（質問5-B）
+        try { if(localStorage.getItem(storeKey) === '1'){ open(); return; } } catch(e){}
+
+        var player = players[vIndex];
+        if(!player){ open(); return; } // フェイルオープン保険
+
+        var watched = 0;   // 実視聴秒数の累積
+        var last = null;   // 直前の currentTime
+
+        player.on('timeupdate', function(){
+          if(!player.playing) return;
+          var t = player.currentTime;
+          // 再生中の連続した進行のみ加算（シーク/早送りは加算しない）
+          if(last != null && t > last && (t - last) < 1.5){ watched += (t - last); }
+          last = t;
+          if(watched >= thresholdSec) open();
+        });
+        player.on('seeking', function(){ last = null; });
+        player.on('pause', function(){ last = null; });
+        player.on('ended', function(){ open(); });
+      })(gates[i]);
+    }
+  }
+
+  function startCountdown(expiresAtMs, serverNowMs, redirectUrl){
+    if(expiresAtMs == null || !redirectUrl) return;
+    var containers = document.querySelectorAll('[data-countdown]');
+    if(!containers.length) return;
+
+    var offset = Date.now() - (serverNowMs || Date.now());
+
+    var widgets = [];
+    for(var i = 0; i < containers.length; i++){
+      var c = containers[i];
+      widgets.push({
+        root: c,
+        dCell: c.querySelector('[data-unit="days"]'),
+        dNum:  c.querySelector('[data-unit="days"] .countdown-num'),
+        hNum:  c.querySelector('[data-unit="hours"] .countdown-num'),
+        mNum:  c.querySelector('[data-unit="minutes"] .countdown-num'),
+        sNum:  c.querySelector('[data-unit="seconds"] .countdown-num')
+      });
+      c.style.display = '';
+    }
+
+    function pad(n){ return n < 10 ? '0' + n : String(n); }
+
+    var timerId = null;
+    var fired = false;
+
+    function tick(){
+      var remaining = expiresAtMs - (Date.now() - offset);
+      if(remaining <= 0){
+        for(var w = 0; w < widgets.length; w++){
+          widgets[w].dNum.textContent = '0';
+          widgets[w].hNum.textContent = '00';
+          widgets[w].mNum.textContent = '00';
+          widgets[w].sNum.textContent = '00';
+        }
+        if(!fired){
+          fired = true;
+          if(timerId) clearInterval(timerId);
+          location.replace(redirectUrl);
+        }
+        return;
+      }
+      var totalSec = Math.floor(remaining / 1000);
+      var days    = Math.floor(totalSec / 86400);
+      var hours   = Math.floor((totalSec % 86400) / 3600);
+      var minutes = Math.floor((totalSec % 3600) / 60);
+      var seconds = totalSec % 60;
+      for(var w = 0; w < widgets.length; w++){
+        var wd = widgets[w];
+        if(days >= 1){
+          wd.dCell.style.display = '';
+          wd.dNum.textContent = String(days);
+        } else {
+          wd.dCell.style.display = 'none';
+        }
+        wd.hNum.textContent = pad(hours);
+        wd.mNum.textContent = pad(minutes);
+        wd.sNum.textContent = pad(seconds);
+      }
+    }
+
+    tick();
+    timerId = setInterval(tick, 1000);
+    document.addEventListener('visibilitychange', function(){
+      if(!document.hidden) tick();
+    });
   }
 
   async function main(){
@@ -614,6 +1073,7 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
         return;
       }
       render(res.data.payload);
+      startCountdown(res.data.expiresAtMs, res.data.serverNowMs, res.data.expiredRedirectUrl);
     } catch(e){
       console.error(e);
       fail('読み込みに失敗しました');
@@ -629,22 +1089,127 @@ window.__LIFF_ID__ = ${JSON.stringify(liffId)};
   );
 });
 
-// Convenience redirect for /book path
 app.get('/book', (c) => c.redirect('/?page=book'));
+
+// URL（パス or クエリ）からイベント/フォーム等のレコードを引いて OGP HTML を組み立てる。
+// LIFF アプリの共有 URL は実際には `https://liff.line.me/<LIFF_ID>/?page=event&id=<id>`
+// 形式で、Worker に届くときは pathname が `/`、クエリに `page` `id` `liffId` が乗る。
+// 旧形式の `/events/:id` パスも残しているのでパスマッチも合わせて見る。
+async function buildOgForLiffPath(db: D1Database, url: URL): Promise<string> {
+  const pathname = url.pathname;
+  const liffIdFromQuery = url.searchParams.get('liffId');
+  const pageFromQuery = url.searchParams.get('page');
+  const idFromQuery = url.searchParams.get('id');
+  const absoluteUrl = url.toString();
+
+  const lookupAccountByLiff = async (liffId: string | null): Promise<any> => {
+    if (!liffId) return null;
+    return db
+      .prepare(`SELECT * FROM line_accounts WHERE liff_id = ?`)
+      .bind(liffId)
+      .first<any>();
+  };
+  const lookupAccountById = async (id: string | null): Promise<any> => {
+    if (!id) return null;
+    return db.prepare(`SELECT * FROM line_accounts WHERE id = ?`).bind(id).first<any>();
+  };
+
+  // event: パス `/events/:id` または クエリ `?page=event&id=`
+  let eventId: string | null = null;
+  const eventPathMatch = pathname.match(/^\/events\/([^/]+)(?:\/(?:confirm|done))?\/?$/);
+  if (eventPathMatch) eventId = eventPathMatch[1];
+  else if (pageFromQuery === 'event' && idFromQuery) eventId = idFromQuery;
+
+  if (eventId) {
+    // liffId クエリでアカウントが特定できる場合は /api/liff/events/:id と
+    // 同じ可視性条件（deleted_at IS NULL, is_published=1, target アカウント所属）
+    // で event を取得する。未公開・削除済みのイベント情報を bot プレビューに
+    // 漏らさない。liffId が無いか不一致なら、最低限の公開条件のみ適用。
+    let event: any = null;
+    let account: any = null;
+
+    if (liffIdFromQuery) {
+      account = await lookupAccountByLiff(liffIdFromQuery);
+      if (account) {
+        event = await db
+          .prepare(
+            `SELECT * FROM events
+              WHERE id = ? AND deleted_at IS NULL AND is_published = 1 AND (
+                (target_type = 'single' AND line_account_id = ?)
+                OR (target_type = 'multi-account-dedup'
+                    AND EXISTS (SELECT 1 FROM json_each(account_ids) WHERE value = ?))
+              )`,
+          )
+          .bind(eventId, account.id, account.id)
+          .first<any>();
+      }
+    }
+
+    if (!event) {
+      // liffId 指定でアカウント特定したが strict query で event が引けなかった、
+      // または liffId 無しのフォールバック。account の branding を持ち越すと
+      // event とアカウントの組み合わせが不整合になるのでリセットする。
+      account = null;
+      event = await db
+        .prepare(
+          `SELECT * FROM events WHERE id = ? AND deleted_at IS NULL AND is_published = 1`,
+        )
+        .bind(eventId)
+        .first<any>();
+      if (event && event.target_type === 'single' && event.line_account_id) {
+        // multi-account-dedup のときは line_account_id が sentinel なので
+        // branding に使わない（og:site_name は 'LINE' フォールバック）。
+        account = await lookupAccountById(event.line_account_id);
+      }
+    }
+
+    if (event) {
+      const og = resolveOgForEvent(event, account, absoluteUrl);
+      return buildOgHtml(og);
+    }
+  }
+
+  // form: クエリ `?page=form&id=`
+  if (pageFromQuery === 'form' && idFromQuery) {
+    const form = await db
+      .prepare(`SELECT * FROM forms WHERE id = ?`)
+      .bind(idFromQuery)
+      .first<any>();
+    if (form) {
+      const account = await lookupAccountByLiff(liffIdFromQuery);
+      const og = resolveOgForForm(form, account, absoluteUrl);
+      return buildOgHtml(og);
+    }
+  }
+
+  // フォールバック: アカウントデフォルトのみ
+  const account = await lookupAccountByLiff(liffIdFromQuery);
+  const og = resolveOgForAccount(account, absoluteUrl);
+  return buildOgHtml(og);
+}
 
 // 404 fallback — API paths return JSON 404, everything else serves from static assets (LIFF/admin)
 app.notFound(async (c) => {
-  const path = new URL(c.req.url).pathname;
+  const url = new URL(c.req.url);
+  const path = url.pathname;
   if (path.startsWith('/api/') || path === '/webhook' || path === '/docs' || path === '/openapi.json') {
     return c.json({ success: false, error: 'Not found' }, 404);
   }
+
+  // Bot UA (LINE/X/Facebook 等のリンクプレビュー) → OGP HTML を返す
+  const ua = c.req.header('user-agent') || '';
+  if (isLinkPreviewBot(ua)) {
+    const html = await buildOgForLiffPath(c.env.DB, url);
+    return c.html(html);
+  }
+
   // Serve static assets (admin dashboard, LIFF pages)
   return c.env.ASSETS.fetch(c.req.raw);
 });
 
 // Scheduled handler for cron triggers — runs for all active LINE accounts
 async function scheduled(
-  _event: ScheduledEvent,
+  event: ScheduledEvent,
   env: Env['Bindings'],
   _ctx: ExecutionContext,
 ): Promise<void> {
@@ -687,13 +1252,68 @@ async function scheduled(
     console.error('Insight fetch error:', e);
   }
 
-  // Cross-account duplicate detection & auto-tagging
+  // Booking reminders — every 5-minute tick scans due reminders.
   try {
-    const { processDuplicateDetection } = await import('./services/duplicate-detect.js');
-    await processDuplicateDetection(env.DB);
+    const result = await processDueReminders(env.DB, {
+      now: new Date(),
+      sender: sendBookingNotification,
+      reminderHoursBefore: DEFAULT_ACCOUNT_SETTINGS.reminder_hours_before,
+    });
+    if (result.sent + result.failed > 0) {
+      console.log(`[booking-reminders] sent=${result.sent} failed=${result.failed}`);
+    }
   } catch (e) {
-    console.error('Duplicate detection error:', e);
+    console.error('booking-reminders error:', e);
   }
+
+  // Booking expirer — runs only on the 6h cron tick.
+  if (event.cron === '0 */6 * * *') {
+    try {
+      const result = await runExpirer(env.DB, {
+        now: new Date(),
+        sender: sendBookingNotification,
+      });
+      console.log(
+        `[booking-expirer] expired=${result.expired} idempotency_purged=${result.idempotencyPurged}`,
+      );
+    } catch (e) {
+      console.error('booking-expirer error:', e);
+    }
+  }
+
+  // Event-booking reminders — every 5-minute tick scans due reminders.
+  try {
+    const result = await processDueEventReminders(env.DB, {
+      now: new Date(),
+      sender: sendEventBookingNotification,
+    });
+    if (result.sent + result.failed > 0) {
+      console.log(`[event-booking-reminders] sent=${result.sent} failed=${result.failed}`);
+    }
+  } catch (e) {
+    console.error('event-booking-reminders error:', e);
+  }
+
+  // Event-booking expirer — 6h cron tick.
+  if (event.cron === '0 */6 * * *') {
+    try {
+      const result = await runEventBookingExpirer(env.DB, { now: new Date() });
+      console.log(
+        `[event-booking-expirer] expired=${result.expired} idempotency_purged=${result.idempotencyPurged}`,
+      );
+    } catch (e) {
+      console.error('event-booking-expirer error:', e);
+    }
+  }
+
+  // Cross-account duplicate detection — disabled.
+  // The cron used to materialize duplicates into the tag system but the 1k-subrequest
+  // budget can't drain a 1k+ candidate backlog, and a live SELECT against
+  // friends.picture_url / display_name / status_message gives the same answer
+  // on demand. Replacement: a /api/duplicates endpoint plus a dashboard view
+  // (planned alongside the multi-provider UI work). Keeping the service file
+  // (apps/worker/src/services/duplicate-detect.ts) and the existing
+  // `重複:` tag rows untouched until that replacement lands.
 }
 
 export default {

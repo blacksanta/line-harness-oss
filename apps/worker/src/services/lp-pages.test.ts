@@ -1,14 +1,22 @@
 import { describe, it, expect } from 'vitest';
-import { isLpAccessible, type LpPage } from '@line-crm/db';
+import {
+  isLpAccessible,
+  computeLpExpiryMs,
+  parseBlocks,
+  deriveBlocksFromLegacy,
+  deriveLegacyFromBlocks,
+  normalizeBlocks,
+  type LpPage,
+} from '@line-crm/db';
 
 const baseLp: LpPage = {
   id: 'lp_1',
   line_account_id: null,
   name: 'テスト',
   slug: 'test',
-  content_type: 'video',
   video_url: 'https://www.youtube.com/watch?v=xxx',
   body: null,
+  blocks: null,
   access_window_mode: 'none',
   absolute_starts_at: null,
   absolute_ends_at: null,
@@ -129,5 +137,286 @@ describe('isLpAccessible', () => {
       expect(r.allowed).toBe(false);
       if (!r.allowed) expect(r.reason).toBe('not_yet');
     });
+  });
+});
+
+describe('computeLpExpiryMs', () => {
+  it('none モードは null', () => {
+    expect(computeLpExpiryMs(baseLp, friend)).toBeNull();
+  });
+
+  it('absolute モード: end の epoch ms を返す', () => {
+    const lp: LpPage = {
+      ...baseLp,
+      access_window_mode: 'absolute',
+      absolute_ends_at: '2026-05-20T23:59:59.000+09:00',
+    };
+    expect(computeLpExpiryMs(lp, friend)).toBe(
+      new Date('2026-05-20T23:59:59.000+09:00').getTime(),
+    );
+  });
+
+  it('absolute モードで end が null なら null', () => {
+    const lp: LpPage = { ...baseLp, access_window_mode: 'absolute' };
+    expect(computeLpExpiryMs(lp, friend)).toBeNull();
+  });
+
+  it('relative モード: friend.created_at + N日', () => {
+    const lp: LpPage = {
+      ...baseLp,
+      access_window_mode: 'relative',
+      relative_days_after_friend_add: 7,
+    };
+    const f = { created_at: '2026-05-01T00:00:00.000+09:00' };
+    expect(computeLpExpiryMs(lp, f)).toBe(
+      new Date('2026-05-08T00:00:00.000+09:00').getTime(),
+    );
+  });
+
+  it('relative モード: friend が null なら null', () => {
+    const lp: LpPage = {
+      ...baseLp,
+      access_window_mode: 'relative',
+      relative_days_after_friend_add: 7,
+    };
+    expect(computeLpExpiryMs(lp, null)).toBeNull();
+  });
+
+  it('relative モード: 日数が null なら null', () => {
+    const lp: LpPage = {
+      ...baseLp,
+      access_window_mode: 'relative',
+      relative_days_after_friend_add: null,
+    };
+    expect(computeLpExpiryMs(lp, friend)).toBeNull();
+  });
+
+  it('both モード: 早い方（absolute）を返す', () => {
+    const lp: LpPage = {
+      ...baseLp,
+      access_window_mode: 'both',
+      absolute_ends_at: '2026-05-05T00:00:00.000+09:00',
+      relative_days_after_friend_add: 30,
+    };
+    const f = { created_at: '2026-05-01T00:00:00.000+09:00' };
+    expect(computeLpExpiryMs(lp, f)).toBe(
+      new Date('2026-05-05T00:00:00.000+09:00').getTime(),
+    );
+  });
+
+  it('both モード: 早い方（relative）を返す', () => {
+    const lp: LpPage = {
+      ...baseLp,
+      access_window_mode: 'both',
+      absolute_ends_at: '2026-06-01T00:00:00.000+09:00',
+      relative_days_after_friend_add: 3,
+    };
+    const f = { created_at: '2026-05-01T00:00:00.000+09:00' };
+    expect(computeLpExpiryMs(lp, f)).toBe(
+      new Date('2026-05-04T00:00:00.000+09:00').getTime(),
+    );
+  });
+
+  it('both モード: 片方しか設定が無ければ設定された方を返す', () => {
+    const lp: LpPage = {
+      ...baseLp,
+      access_window_mode: 'both',
+      absolute_ends_at: '2026-05-05T00:00:00.000+09:00',
+      relative_days_after_friend_add: null,
+    };
+    expect(computeLpExpiryMs(lp, friend)).toBe(
+      new Date('2026-05-05T00:00:00.000+09:00').getTime(),
+    );
+  });
+
+  it('both モード: 両方未設定なら null', () => {
+    const lp: LpPage = { ...baseLp, access_window_mode: 'both' };
+    expect(computeLpExpiryMs(lp, friend)).toBeNull();
+  });
+});
+
+describe('parseBlocks', () => {
+  it('null は []', () => {
+    expect(parseBlocks(null)).toEqual([]);
+  });
+
+  it('空文字は []', () => {
+    expect(parseBlocks('')).toEqual([]);
+  });
+
+  it('不正JSONは []', () => {
+    expect(parseBlocks('{not json}')).toEqual([]);
+  });
+
+  it('配列でない場合は []', () => {
+    expect(parseBlocks('{"type":"video"}')).toEqual([]);
+  });
+
+  it('正常な配列はそのまま返す', () => {
+    const raw = JSON.stringify([
+      { id: 'a', type: 'video', url: 'https://example.com/v' },
+      { id: 'b', type: 'markdown', text: 'hello' },
+    ]);
+    expect(parseBlocks(raw)).toHaveLength(2);
+  });
+
+  it('typeが文字列でない要素は除外', () => {
+    const raw = JSON.stringify([
+      { id: 'a', type: 'video', url: 'https://example.com/v' },
+      { id: 'b' },
+      'not-an-object',
+    ]);
+    expect(parseBlocks(raw)).toHaveLength(1);
+  });
+});
+
+describe('deriveBlocksFromLegacy', () => {
+  it('video のみ → [video]', () => {
+    const r = deriveBlocksFromLegacy('https://youtu.be/x', null);
+    expect(r).toHaveLength(1);
+    expect(r[0].type).toBe('video');
+  });
+
+  it('body のみ → [markdown]', () => {
+    const r = deriveBlocksFromLegacy(null, '# title');
+    expect(r).toHaveLength(1);
+    expect(r[0].type).toBe('markdown');
+  });
+
+  it('両方 → [video, markdown]', () => {
+    const r = deriveBlocksFromLegacy('https://youtu.be/x', '# title');
+    expect(r.map((b) => b.type)).toEqual(['video', 'markdown']);
+  });
+
+  it('両方なし → []', () => {
+    expect(deriveBlocksFromLegacy(null, null)).toEqual([]);
+  });
+
+  it('空白文字のみは扱わない', () => {
+    expect(deriveBlocksFromLegacy('   ', '  ')).toEqual([]);
+  });
+});
+
+describe('deriveLegacyFromBlocks', () => {
+  it('最初の video が videoUrl になる', () => {
+    const r = deriveLegacyFromBlocks([
+      { id: '1', type: 'video', url: 'https://a/1' },
+      { id: '2', type: 'video', url: 'https://a/2' },
+    ]);
+    expect(r.videoUrl).toBe('https://a/1');
+  });
+
+  it('markdown 複数は --- で連結', () => {
+    const r = deriveLegacyFromBlocks([
+      { id: '1', type: 'markdown', text: 'intro' },
+      { id: '2', type: 'markdown', text: 'outro' },
+    ]);
+    expect(r.body).toBe('intro\n\n---\n\noutro');
+  });
+
+  it('video/markdown が無い場合は null/null', () => {
+    const r = deriveLegacyFromBlocks([{ id: '1', type: 'divider' }]);
+    expect(r).toEqual({ videoUrl: null, body: null });
+  });
+});
+
+describe('normalizeBlocks', () => {
+  it('id 欠落は自動採番', () => {
+    const r = normalizeBlocks([{ type: 'markdown', text: 'hi' }]);
+    expect(r[0].id).toBeTruthy();
+  });
+
+  it('未知の type は throw', () => {
+    expect(() => normalizeBlocks([{ type: 'unknown' }])).toThrow();
+  });
+
+  it('video.url 必須', () => {
+    expect(() => normalizeBlocks([{ type: 'video', url: '' }])).toThrow();
+  });
+
+  it('button.label/href 必須', () => {
+    expect(() => normalizeBlocks([{ type: 'button', label: '', href: 'x' }])).toThrow();
+    expect(() => normalizeBlocks([{ type: 'button', label: 'ok', href: '' }])).toThrow();
+  });
+
+  it('divider はフィールド不要', () => {
+    const r = normalizeBlocks([{ type: 'divider' }]);
+    expect(r[0]).toMatchObject({ type: 'divider' });
+  });
+
+  it('image の alt/href は省略可', () => {
+    const r = normalizeBlocks([{ type: 'image', url: 'https://x' }]);
+    expect(r[0]).toMatchObject({ type: 'image', url: 'https://x', alt: null, href: null });
+  });
+
+  it('reservation.label 必須', () => {
+    expect(() =>
+      normalizeBlocks([{ type: 'reservation', reservationType: 'event', eventId: 'e1', label: '' }]),
+    ).toThrow();
+  });
+
+  it('reservation(event) は eventId 必須', () => {
+    expect(() =>
+      normalizeBlocks([{ type: 'reservation', reservationType: 'event', label: '予約' }]),
+    ).toThrow();
+  });
+
+  it('reservation(event) 正常系: eventId を保持し menuId は null', () => {
+    const r = normalizeBlocks([
+      { type: 'reservation', reservationType: 'event', eventId: 'ev-1', label: '予約', menuId: 'ignored' },
+    ]);
+    expect(r[0]).toMatchObject({
+      type: 'reservation',
+      reservationType: 'event',
+      eventId: 'ev-1',
+      menuId: null,
+      label: '予約',
+      style: 'primary',
+    });
+  });
+
+  it('reservation(salon) は menuId 省略可・eventId は null', () => {
+    const r = normalizeBlocks([
+      { type: 'reservation', reservationType: 'salon', label: 'サロン予約' },
+    ]);
+    expect(r[0]).toMatchObject({
+      type: 'reservation',
+      reservationType: 'salon',
+      eventId: null,
+      menuId: null,
+    });
+  });
+
+  it('reservation(salon) は menuId を保持できる', () => {
+    const r = normalizeBlocks([
+      { type: 'reservation', reservationType: 'salon', label: 'サロン予約', menuId: 'menu-1' },
+    ]);
+    expect(r[0]).toMatchObject({ type: 'reservation', reservationType: 'salon', menuId: 'menu-1' });
+  });
+
+  it('videoGateStart 正常系: minutes を整数化し hintText を保持', () => {
+    const r = normalizeBlocks([
+      { type: 'videoGateStart', minutes: 3.9, hintText: '特典は視聴後に表示' },
+    ]);
+    expect(r[0]).toMatchObject({
+      type: 'videoGateStart',
+      minutes: 3,
+      hintText: '特典は視聴後に表示',
+    });
+  });
+
+  it('videoGateStart は不正な minutes を 1 に丸める / 空 hintText は null', () => {
+    const r = normalizeBlocks([{ type: 'videoGateStart', minutes: 0, hintText: '   ' }]);
+    expect(r[0]).toMatchObject({ type: 'videoGateStart', minutes: 1, hintText: null });
+  });
+
+  it('videoGateEnd 正常系（構成不正でも throw しない）', () => {
+    const r = normalizeBlocks([{ type: 'videoGateEnd' }]);
+    expect(r[0]).toMatchObject({ type: 'videoGateEnd' });
+    expect(typeof r[0].id).toBe('string');
+  });
+
+  it('配列でない入力は throw', () => {
+    expect(() => normalizeBlocks('not-an-array' as never)).toThrow();
   });
 });

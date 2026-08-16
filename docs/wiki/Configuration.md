@@ -108,21 +108,21 @@ npx wrangler d1 create line-crm
 
 ```bash
 # 本番
-npx wrangler d1 execute line-crm --file=packages/db/schema.sql
+npx wrangler d1 execute your-database --file=packages/db/schema.sql
 
 # ローカル開発
 pnpm db:migrate:local
-# = wrangler d1 execute line-crm --file=packages/db/schema.sql --local
+# = wrangler d1 execute your-database --file=packages/db/schema.sql --local
 ```
 
 ### D1 ダッシュボード確認
 
 ```bash
 # テーブル一覧確認
-npx wrangler d1 execute line-crm --command="SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+npx wrangler d1 execute your-database --command="SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
 
 # レコード数確認
-npx wrangler d1 execute line-crm --command="SELECT COUNT(*) FROM friends"
+npx wrangler d1 execute your-database --command="SELECT COUNT(*) FROM friends"
 ```
 
 ### D1 バインディング

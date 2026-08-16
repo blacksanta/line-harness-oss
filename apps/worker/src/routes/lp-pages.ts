@@ -9,12 +9,23 @@ import {
   createLpView,
   getLpViews,
   isLpAccessible,
+  computeLpExpiryMs,
   getFriendByLineUserId,
+  parseBlocks,
+  normalizeBlocks,
+  deriveBlocksFromLegacy,
+  deriveLegacyFromBlocks,
+  type LpBlock,
   type LpPage,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
 
 const lpPages = new Hono<Env>();
+
+function blocksFor(row: LpPage): LpBlock[] {
+  const parsed = parseBlocks(row.blocks);
+  return parsed.length ? parsed : deriveBlocksFromLegacy(row.video_url, row.body);
+}
 
 function serializeLpPage(row: LpPage) {
   return {
@@ -22,9 +33,9 @@ function serializeLpPage(row: LpPage) {
     lineAccountId: row.line_account_id,
     name: row.name,
     slug: row.slug,
-    contentType: row.content_type,
     videoUrl: row.video_url,
     body: row.body,
+    blocks: blocksFor(row),
     accessWindowMode: row.access_window_mode,
     absoluteStartsAt: row.absolute_starts_at,
     absoluteEndsAt: row.absolute_ends_at,
@@ -67,9 +78,9 @@ lpPages.post('/api/lp-pages', async (c) => {
     const body = await c.req.json<{
       name: string;
       slug?: string;
-      contentType: 'video' | 'page';
       videoUrl?: string | null;
       body?: string | null;
+      blocks?: unknown;
       accessWindowMode: 'absolute' | 'relative' | 'both' | 'none';
       absoluteStartsAt?: string | null;
       absoluteEndsAt?: string | null;
@@ -81,14 +92,37 @@ lpPages.post('/api/lp-pages', async (c) => {
     }>();
 
     if (!body.name) return c.json({ success: false, error: 'name is required' }, 400);
-    if (!body.contentType) return c.json({ success: false, error: 'contentType is required' }, 400);
     if (!body.expiredRedirectUrl) return c.json({ success: false, error: 'expiredRedirectUrl is required' }, 400);
-    if (body.contentType === 'video' && !body.videoUrl) {
-      return c.json({ success: false, error: 'videoUrl is required for video content' }, 400);
+
+    // blocks 優先、無ければ legacy (videoUrl/body) から生成。両方無ければエラー。
+    let finalBlocks: LpBlock[];
+    if (Array.isArray(body.blocks) && body.blocks.length > 0) {
+      try {
+        finalBlocks = normalizeBlocks(body.blocks);
+      } catch (e) {
+        return c.json({ success: false, error: (e as Error).message }, 400);
+      }
+    } else {
+      const hasVideo = typeof body.videoUrl === 'string' && body.videoUrl.trim() !== '';
+      const hasBody = typeof body.body === 'string' && body.body.trim() !== '';
+      if (!hasVideo && !hasBody) {
+        return c.json({ success: false, error: 'blocks (or videoUrl/body) is required' }, 400);
+      }
+      finalBlocks = deriveBlocksFromLegacy(body.videoUrl ?? null, body.body ?? null);
     }
-    if (body.contentType === 'page' && !body.body) {
-      return c.json({ success: false, error: 'body is required for page content' }, 400);
+
+    // 予約ブロックは公開ページで「予約用LIFF」を解決するため line_account_id が必要。
+    // 未指定で保存すると公開ページでボタンが無効化されるので保存時点で弾く。
+    const hasReservation = finalBlocks.some((b) => b.type === 'reservation');
+    if (hasReservation && !body.lineAccountId) {
+      return c.json(
+        { success: false, error: 'lineAccountId is required when blocks contain a reservation' },
+        400,
+      );
     }
+
+    const legacy = deriveLegacyFromBlocks(finalBlocks);
+
     if ((body.accessWindowMode === 'relative' || body.accessWindowMode === 'both') && !body.relativeDaysAfterFriendAdd) {
       return c.json({ success: false, error: 'relativeDaysAfterFriendAdd is required for relative/both mode' }, 400);
     }
@@ -103,9 +137,9 @@ lpPages.post('/api/lp-pages', async (c) => {
     const lp = await createLpPage(c.env.DB, {
       name: body.name,
       slug,
-      contentType: body.contentType,
-      videoUrl: body.videoUrl ?? null,
-      body: body.body ?? null,
+      videoUrl: legacy.videoUrl,
+      body: legacy.body,
+      blocks: finalBlocks,
       accessWindowMode: body.accessWindowMode,
       absoluteStartsAt: body.absoluteStartsAt ?? null,
       absoluteEndsAt: body.absoluteEndsAt ?? null,
@@ -135,9 +169,12 @@ lpPages.put('/api/lp-pages/:id', async (c) => {
     const id = c.req.param('id');
     const body = await c.req.json<Record<string, unknown>>();
 
+    const existing = await getLpPageById(c.env.DB, id);
+    if (!existing) return c.json({ success: false, error: 'LP not found' }, 404);
+
     const updates: Record<string, unknown> = {};
     const passthrough = [
-      'name', 'slug', 'contentType', 'videoUrl', 'body',
+      'name', 'slug', 'videoUrl', 'body',
       'accessWindowMode', 'absoluteStartsAt', 'absoluteEndsAt', 'relativeDaysAfterFriendAdd',
       'expiredRedirectUrl', 'notFriendRedirectUrl', 'lineAccountId', 'isActive',
     ] as const;
@@ -145,11 +182,53 @@ lpPages.put('/api/lp-pages/:id', async (c) => {
       if (k in body) updates[k] = body[k];
     }
 
+    // blocks が来ていれば正規化して、video_url/body も同期して更新キューに積む。
+    // blocks が来ていない場合は、videoUrl/body の更新値から blocks を再生成する。
+    let nextBlocks: LpBlock[] | null = null;
+    if ('blocks' in body) {
+      try {
+        const arr = Array.isArray(body.blocks) ? body.blocks : [];
+        nextBlocks = normalizeBlocks(arr);
+      } catch (e) {
+        return c.json({ success: false, error: (e as Error).message }, 400);
+      }
+      const legacy = deriveLegacyFromBlocks(nextBlocks);
+      updates.blocks = nextBlocks;
+      updates.videoUrl = legacy.videoUrl;
+      updates.body = legacy.body;
+    } else if ('videoUrl' in updates || 'body' in updates) {
+      const nextVideo = ('videoUrl' in updates ? updates.videoUrl : existing.video_url) as string | null;
+      const nextBody = ('body' in updates ? updates.body : existing.body) as string | null;
+      nextBlocks = deriveBlocksFromLegacy(nextVideo, nextBody);
+      updates.blocks = nextBlocks;
+    }
+
     if (typeof updates.slug === 'string') {
       const dup = await getLpPageBySlug(c.env.DB, updates.slug);
       if (dup && dup.id !== id) {
         return c.json({ success: false, error: `slug "${updates.slug}" is already taken` }, 409);
       }
+    }
+
+    // 更新後のコンテンツが完全に空になる場合は拒否
+    const finalBlocks =
+      nextBlocks !== null ? nextBlocks : parseBlocks(existing.blocks).length
+        ? parseBlocks(existing.blocks)
+        : deriveBlocksFromLegacy(existing.video_url, existing.body);
+    if (finalBlocks.length === 0) {
+      return c.json({ success: false, error: 'blocks (or videoUrl/body) must not be empty' }, 400);
+    }
+
+    // POST と同様、reservation ブロックを残すなら lineAccountId が必須。
+    // updates に lineAccountId が含まれていればそれを、そうでなければ既存値を見る。
+    const hasReservation = finalBlocks.some((b) => b.type === 'reservation');
+    const nextLineAccountId =
+      'lineAccountId' in updates ? (updates.lineAccountId as string | null | undefined) : existing.line_account_id;
+    if (hasReservation && !nextLineAccountId) {
+      return c.json(
+        { success: false, error: 'lineAccountId is required when blocks contain a reservation' },
+        400,
+      );
     }
 
     const updated = await updateLpPage(c.env.DB, id, updates as never);
@@ -202,7 +281,6 @@ lpPages.get('/api/lp-pages/by-slug/:slug', async (c) => {
         id: lp.id,
         name: lp.name,
         slug: lp.slug,
-        contentType: lp.content_type,
       },
     });
   } catch (err) {
@@ -247,11 +325,17 @@ lpPages.post('/api/lp-pages/:id/check-access', async (c) => {
       data: {
         allowed: true,
         payload: {
-          contentType: lp.content_type,
           videoUrl: lp.video_url,
           body: lp.body,
+          blocks: blocksFor(lp),
           name: lp.name,
         },
+        expiresAtMs: computeLpExpiryMs(
+          lp,
+          friend ? { created_at: friend.created_at } : null,
+        ),
+        serverNowMs: Date.now(),
+        expiredRedirectUrl: lp.expired_redirect_url,
       },
     });
   } catch (err) {
