@@ -8,6 +8,9 @@ dist/
 *.log
 .DS_Store
 .mcp.json
+# LINE チャネルトークン / チャネルシークレット / API キーを含む。コミット禁止。
+.line-harness-setup.json
+.line-harness-config.json
 *.toml.bak
 .env.production
 .env.staging
