@@ -14,6 +14,8 @@ import {
 } from '@/components/accounts/account-form-fields'
 import AccountSetupUrls from '@/components/accounts/account-setup-urls'
 import AccountEditModal from '@/components/accounts/account-edit-modal'
+import LinkBaseUrlSetting from '@/components/accounts/link-base-url-setting'
+import FollowerImportButton from '@/components/accounts/follower-import-button'
 
 interface LineAccountListItem {
   id: string
@@ -318,6 +320,7 @@ export default function AccountsPage() {
                 onUpdated={load}
               />
               <TestRecipientsSetting accountId={account.id} />
+              <FollowerImportButton accountId={account.id} onImported={load} />
 
               <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-100">
                 <p className="text-xs text-gray-400">
@@ -342,6 +345,10 @@ export default function AccountsPage() {
           ))}
         </div>
       )}
+      <div className="mt-8">
+        <h2 className="text-sm font-semibold text-gray-700 mb-3">グローバル設定</h2>
+        <LinkBaseUrlSetting />
+      </div>
       <CcPromptButton prompts={ccPrompts} />
       {showReorder && (
         <ReorderMode

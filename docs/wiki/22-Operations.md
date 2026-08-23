@@ -1,6 +1,6 @@
 # 22. 運用ガイド
 
-LINE Harness の日常運用、監視、バックアップ、トラブルシューティングの完全ガイド。
+L Harness の日常運用、監視、バックアップ、トラブルシューティングの完全ガイド。
 
 ---
 
@@ -33,8 +33,8 @@ curl -s -H "Authorization: Bearer $KEY" "$API/api/accounts/{lineAccountId}/healt
 # 友だち総数
 curl -s -H "Authorization: Bearer $KEY" "$API/api/friends/count" | jq '.data.count'
 
-# 未読チャット数
-curl -s -H "Authorization: Bearer $KEY" "$API/api/chats?status=unread" | jq '.data | length'
+# 未読チャット数 (limit を明示する: /api/chats はデフォルト 300 件で頭打ちになる)
+curl -s -H "Authorization: Bearer $KEY" "$API/api/chats?status=unread&limit=1000" | jq '.data | length'
 
 # 今週の CV
 curl -s -H "Authorization: Bearer $KEY" "$API/api/conversions/report?startDate=$(date -v-7d +%Y-%m-%d)" | jq '.data'

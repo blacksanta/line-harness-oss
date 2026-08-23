@@ -1,7 +1,9 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { parseStickerMessageContent, stickerFallback } from '@line-crm/shared'
 import { api, fetchApi } from '@/lib/api'
+import { UNANSWERED_REFRESH_EVENT } from '@/lib/events'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
@@ -55,8 +57,28 @@ const statusFilters: { key: StatusFilter; label: string }[] = [
 ]
 
 const SHOW_LOADING_PREF_KEY = 'lh_chat_show_loading_indicator'
+// 一覧の1ページ件数。worker 側 /api/chats のデフォルト LIMIT と揃える。
+const CHAT_PAGE_SIZE = 300
 const LOADING_SECONDS_PREF_KEY = 'lh_chat_loading_seconds'
 const LOADING_REFRESH_INTERVAL_MS = 4000
+
+function StickerMessageImage({ content }: { content: string }) {
+  const [failed, setFailed] = useState(false)
+  const sticker = parseStickerMessageContent(content)
+  const fallback = stickerFallback(content)
+
+  if (!sticker || failed) return <span>{fallback}</span>
+
+  return (
+    <img
+      src={sticker.stickerUrl}
+      alt={fallback}
+      className="max-h-[140px] max-w-[140px] object-contain"
+      loading="lazy"
+      onError={() => setFailed(true)}
+    />
+  )
+}
 
 function formatDatetime(iso: string | null): string {
   if (!iso) return '-'
@@ -191,6 +213,9 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
         return texts.slice(0, 4).join('\n') || '[Flex Message]'
       } catch { return '[Flex Message]' }
     }
+    if (msg.messageType === 'sticker') {
+      return <StickerMessageImage content={msg.content} />
+    }
     return `[${msg.messageType}]`
   }
 
@@ -227,7 +252,7 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
                   ? 'bg-green-500 text-white'
                   : 'bg-gray-100 text-gray-900'
               }`}>
-                <p className="text-sm whitespace-pre-wrap break-words">{renderContent(msg)}</p>
+                <div className="text-sm whitespace-pre-wrap break-words">{renderContent(msg)}</div>
                 <p className={`text-xs mt-1 ${msg.direction === 'outgoing' ? 'text-green-200' : 'text-gray-400'}`}>
                   {new Date(msg.createdAt).toLocaleString('ja-JP', { hour: '2-digit', minute: '2-digit' })}
                 </p>
@@ -297,6 +322,8 @@ export default function ChatsPage() {
   // Send mode: 'enter' = Enter sends, Shift+Enter = newline; 'shift-enter' = reverse
   const [sendMode, setSendMode] = useState<'enter' | 'shift-enter'>('enter')
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMoreChats, setHasMoreChats] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
   const [error, setError] = useState('')
   const [messageContent, setMessageContent] = useState('')
@@ -336,24 +363,75 @@ export default function ChatsPage() {
     }
   }, [showLoadingIndicator, loadingSeconds])
 
+  // ページング用カーソル。表示リストは楽観更新で並び替わるため、
+  // 「サーバから最後に受け取った行」を ref で保持して次ページの起点にする
+  // (offset 方式だと新着で行が押し下げられた分が欠落する)。
+  const nextCursorRef = useRef<{ at: string; id: string } | null>(null)
+
+  const buildListParams = useCallback((cursor: { at: string; id: string } | null) => {
+    const params: {
+      status?: string; accountId?: string; unansweredOnly?: boolean;
+      limit?: number; beforeAt?: string; beforeId?: string;
+    } = {}
+    if (statusFilter !== 'all' && !unansweredOnly) params.status = statusFilter
+    if (selectedAccountId) params.accountId = selectedAccountId
+    if (unansweredOnly) params.unansweredOnly = true
+    else params.limit = CHAT_PAGE_SIZE
+    if (cursor) {
+      params.beforeAt = cursor.at
+      params.beforeId = cursor.id
+    }
+    return params
+  }, [statusFilter, selectedAccountId, unansweredOnly])
+
   const loadChats = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const params: { status?: string; accountId?: string; unansweredOnly?: boolean } = {}
-      if (statusFilter !== 'all' && !unansweredOnly) params.status = statusFilter
-      if (selectedAccountId) params.accountId = selectedAccountId
-      if (unansweredOnly) params.unansweredOnly = true
-      const chatRes = await api.chats.list(params)
+      const chatRes = await api.chats.list(buildListParams(null))
       if (chatRes.success) {
-        setChats(chatRes.data as unknown as Chat[])
+        const rows = chatRes.data as unknown as Chat[]
+        setChats(rows)
+        const last = rows[rows.length - 1]
+        nextCursorRef.current = last?.lastMessageAt ? { at: last.lastMessageAt, id: last.id } : null
+        // ページ丁度いっぱい返ってきた = 続きがある可能性が高い (unansweredOnly は全件返る)
+        setHasMoreChats(!unansweredOnly && rows.length === CHAT_PAGE_SIZE)
       }
     } catch {
       setError('チャットの読み込みに失敗しました。もう一度お試しください。')
     } finally {
       setLoading(false)
     }
-  }, [statusFilter, selectedAccountId, unansweredOnly])
+  }, [buildListParams, unansweredOnly])
+
+  // 「さらに読み込む」— サーバ由来カーソルの続きを取得して末尾に追加する。
+  // 楽観更新との競合に備えて既存 id は除外し、重複表示を防ぐ。
+  const loadMoreChats = useCallback(async () => {
+    if (loadingMore) return
+    const cursor = nextCursorRef.current
+    if (!cursor) {
+      setHasMoreChats(false)
+      return
+    }
+    setLoadingMore(true)
+    try {
+      const chatRes = await api.chats.list(buildListParams(cursor))
+      if (chatRes.success) {
+        const rows = chatRes.data as unknown as Chat[]
+        setChats((prev) => {
+          const seen = new Set(prev.map((c) => c.id))
+          return [...prev, ...rows.filter((r) => !seen.has(r.id))]
+        })
+        const last = rows[rows.length - 1]
+        nextCursorRef.current = last?.lastMessageAt ? { at: last.lastMessageAt, id: last.id } : null
+        setHasMoreChats(rows.length === CHAT_PAGE_SIZE)
+      }
+    } catch {
+      setError('チャットの追加読み込みに失敗しました。')
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [loadingMore, buildListParams])
 
   // Friends list (for the "new direct message" modal) — loaded lazily in the background
   // Previously fetched 800 friends in parallel with chats, which blocked the initial render.
@@ -617,9 +695,8 @@ export default function ChatsPage() {
             ...c,
             lastMessageAt: now,
             status: 'in_progress' as const,
-            // 一覧の preview も即時更新する。incoming 優先ロジックで上書きされ得るが、
-            // 楽観 UI では「operator が今送った文面」が一瞬見えるのが期待動作。
-            // 次回 loadChats() で server 側の真の最新 (incoming 優先) に reconcile される。
+            // 一覧の preview も即時更新する。server 側も direction/source を問わず
+            // 実際の最新メッセージを返すため、次回 loadChats() 後も同じ表示になる。
             lastMessageContent: content,
             lastMessageDirection: 'outgoing' as const,
             lastMessageType: 'text' as const,
@@ -641,6 +718,8 @@ export default function ChatsPage() {
           })
         })
       }
+      // 手動返信で未対応が 1 件減るので、サイドバーのバッジを即時更新させる
+      window.dispatchEvent(new Event(UNANSWERED_REFRESH_EVENT))
     } catch {
       setError('メッセージの送信に失敗しました。')
     } finally {
@@ -655,6 +734,8 @@ export default function ChatsPage() {
       await api.chats.update(selectedChatId, { status: newStatus })
       loadChatDetail(selectedChatId)
       loadChats()
+      // 解決済/未読の切替は未対応バッジに影響するので即時更新させる
+      window.dispatchEvent(new Event(UNANSWERED_REFRESH_EVENT))
     } catch {
       setError('ステータスの更新に失敗しました。')
     }
@@ -811,6 +892,15 @@ export default function ChatsPage() {
                     </button>
                   )
                 })}
+                {hasMoreChats && !unansweredOnly && (
+                  <button
+                    onClick={() => { void loadMoreChats() }}
+                    disabled={loadingMore}
+                    className="w-full px-4 py-3 text-sm text-green-700 hover:bg-green-50 disabled:opacity-50 border-b border-gray-100"
+                  >
+                    {loadingMore ? '読み込み中...' : 'さらに読み込む'}
+                  </button>
+                )}
               </>
             )}
           </div>
@@ -938,6 +1028,8 @@ export default function ChatsPage() {
                       } catch {
                         bubbleContent = <span>🖼️ [画像]</span>
                       }
+                    } else if (msg.messageType === 'sticker') {
+                      bubbleContent = <StickerMessageImage content={msg.content} />
                     } else {
                       bubbleContent = <span>{msg.content}</span>
                     }

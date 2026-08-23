@@ -11,6 +11,18 @@ import type {
 
 const LINE_API_BASE = 'https://api.line.me';
 
+export interface FollowersInsight {
+  status: string;
+  followers?: number;
+  targetedReaches?: number;
+  blocks?: number;
+}
+
+export interface FollowerIdsPage {
+  userIds: string[];
+  next?: string;
+}
+
 export class LineClient {
   constructor(private readonly channelAccessToken: string) {}
 
@@ -20,6 +32,7 @@ export class LineClient {
     method: string,
     path: string,
     body?: unknown,
+    requestHeaders: Record<string, string> = {},
   ): Promise<{ data: unknown; headers: Headers }> {
     const url = `${LINE_API_BASE}${path}`;
 
@@ -28,6 +41,7 @@ export class LineClient {
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.channelAccessToken}`,
+        ...requestHeaders,
       },
     };
 
@@ -36,6 +50,13 @@ export class LineClient {
     }
 
     const res = await fetch(url, options);
+
+    // LINE returns 409 when a request with the same X-Line-Retry-Key was
+    // already accepted. For a caller retrying the exact same operation this
+    // is a successful idempotent outcome, not a delivery failure.
+    if (res.status === 409 && requestHeaders['X-Line-Retry-Key']) {
+      return { data: { retryAccepted: true }, headers: res.headers };
+    }
 
     if (!res.ok) {
       const text = await res.text().catch(() => '');
@@ -68,9 +89,19 @@ export class LineClient {
 
   // ─── Messaging ───────────────────────────────────────────────────────────
 
-  async pushMessage(to: string, messages: Message[]): Promise<unknown> {
-    const body: PushMessageRequest = { to, messages };
-    const { data } = await this.request('POST', '/v2/bot/message/push', body);
+  async pushMessage(
+    to: string,
+    messages: Message[],
+    retryKey?: string,
+    customAggregationUnits?: string[],
+  ): Promise<unknown> {
+    const body: PushMessageRequest = { to, messages, customAggregationUnits };
+    const { data } = await this.request(
+      'POST',
+      '/v2/bot/message/push',
+      body,
+      retryKey ? { 'X-Line-Retry-Key': retryKey } : {},
+    );
     return data;
   }
 
@@ -78,6 +109,7 @@ export class LineClient {
     to: string[],
     messages: Message[],
     customAggregationUnits?: string[],
+    retryKey?: string,
   ): Promise<{ data: unknown; requestId: string | null }> {
     const body: Record<string, unknown> = { to, messages };
     if (customAggregationUnits) {
@@ -87,18 +119,21 @@ export class LineClient {
       'POST',
       '/v2/bot/message/multicast',
       body,
+      retryKey ? { 'X-Line-Retry-Key': retryKey } : {},
     );
     return { data, requestId: headers.get('x-line-request-id') };
   }
 
   async broadcast(
     messages: Message[],
+    retryKey?: string,
   ): Promise<{ data: unknown; requestId: string | null }> {
     const body: BroadcastRequest = { messages };
     const { data, headers } = await this.request(
       'POST',
       '/v2/bot/message/broadcast',
       body,
+      retryKey ? { 'X-Line-Retry-Key': retryKey } : {},
     );
     return { data, requestId: headers.get('x-line-request-id') };
   }
@@ -262,5 +297,35 @@ export class LineClient {
       `/v2/bot/insight/message/event/aggregation?${params.toString()}`,
     );
     return data;
+  }
+
+  /**
+   * Get the number of followers for a LINE Official Account on a given date.
+   * GET only — no messages are sent.
+   */
+  async getFollowersInsight(date: string): Promise<FollowersInsight> {
+    const { data } = await this.request(
+      'GET',
+      `/v2/bot/insight/followers?date=${encodeURIComponent(date)}`,
+    );
+    return data as FollowersInsight;
+  }
+
+  /**
+   * Get one page of users who currently follow the LINE Official Account.
+   * Verified/premium accounts only. Pass the returned `next` value as
+   * `start` until `next` is absent to retrieve the full audience.
+   */
+  async getFollowerIds(
+    limit = 1000,
+    start?: string,
+  ): Promise<FollowerIdsPage> {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (start) params.set('start', start);
+    const { data } = await this.request(
+      'GET',
+      `/v2/bot/followers/ids?${params.toString()}`,
+    );
+    return data as FollowerIdsPage;
   }
 }

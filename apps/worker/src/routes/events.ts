@@ -39,6 +39,7 @@ import {
   nextStatus,
   type EventBookingAction,
 } from '../services/event-booking-state.js';
+import { awardActivityMileage } from '../services/activity-mileage.js';
 
 const events = new Hono<Env>();
 
@@ -912,6 +913,11 @@ events.post('/api/liff/events/:id/bookings', async (c) => {
   }
 
   async function runBookingFlow(): Promise<Response> {
+  // Hoisted function declarations lose narrowing of outer-scope `const`
+  // captures; re-assert here to keep `friend` / `callerLineUserId` non-null.
+  // The outer scope already returned on null, so these throws are unreachable.
+  if (friend == null) throw new Error('runBookingFlow: friend missing');
+  if (callerLineUserId == null) throw new Error('runBookingFlow: callerLineUserId missing');
 
   const event = await c.env.DB
     .prepare(
@@ -1088,6 +1094,15 @@ events.post('/api/liff/events/:id/bookings', async (c) => {
       }
     }
   }
+
+  await awardActivityMileage(c.env.DB, {
+    eventType: 'booking_created',
+    source: 'event_booking',
+    sourceEventId: id,
+    friendId: friend.id,
+    metadata: { bookingType: 'event', eventId: event.id, slotId: slot.id },
+    occurredAt: nowIso,
+  });
 
   if (status === 'confirmed') {
     const reminders = computeRemindersForBooking({
