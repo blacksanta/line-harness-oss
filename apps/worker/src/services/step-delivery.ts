@@ -5,16 +5,20 @@ import {
   advanceFriendScenario,
   completeFriendScenario,
   claimFriendScenarioForDelivery,
+  recoverStuckDeliveries,
+  pauseFriendScenarioDelivery,
   getFriendById,
   jstNow,
   computeNextDeliveryAt,
   resolveStepContent,
   addTagToFriend,
   type DeliveryMode,
+  type Friend,
 } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { jitterDeliveryTime, addJitter, sleep } from './stealth.js';
+import { getQuotaUsage, quotaEnabled, type QuotaEnv } from './quota.js';
 
 /**
  * Replace template variables in message content.
@@ -30,6 +34,7 @@ export function expandVariables(
   content: string,
   friend: { id: string; display_name: string | null; user_id: string | null; ref_code?: string | null; metadata?: Record<string, unknown> | string | null },
   apiOrigin?: string,
+  messageType?: string,
 ): string {
   let result = content;
   result = result.replace(/\{\{name\}\}/g, friend.display_name || '');
@@ -53,10 +58,14 @@ export function expandVariables(
     if (val == null || val === '') return '';
     return inner;
   });
-  // Clean up broken JSON commas from removed conditional blocks (e.g. ",," or "[," or ",]")
-  result = result.replace(/,\s*,/g, ',');
-  result = result.replace(/\[\s*,/g, '[');
-  result = result.replace(/,\s*\]/g, ']');
+  // Clean up broken JSON commas from removed conditional blocks (e.g. ",," or "[," or ",]").
+  // Flex only: this is JSON repair — running it on plain text silently rewrote
+  // user-authored bodies containing ",," / "[," / ",]" (bug present since initial release).
+  if (messageType === 'flex') {
+    result = result.replace(/,\s*,/g, ',');
+    result = result.replace(/\[\s*,/g, '[');
+    result = result.replace(/,\s*\]/g, ']');
+  }
   result = result.replace(/\{\{metadata\.([^}]+)\}\}/g, (_match, key) => {
     const val = meta[key];
     if (val == null) return '';
@@ -93,19 +102,60 @@ export async function resolveMetadata(
 }
 
 const MAX_SENDS_PER_CRON = 40; // CF Free plan: 50 subrequests limit (margin for other jobs)
+const MAX_ATTEMPTS_PER_CRON = 40; // condition skips/errors also consume CPU and D1 work
+
+export function getLineApiErrorStatus(err: unknown): number | null {
+  if (!(err instanceof Error)) return null;
+  const match = err.message.match(/^LINE API error:\s+(\d{3})\b/);
+  return match ? Number(match[1]) : null;
+}
+
+export function isPermanentLineDeliveryError(err: unknown): boolean {
+  const status = getLineApiErrorStatus(err);
+  return status !== null && status >= 400 && status < 500 && ![408, 409, 429].includes(status);
+}
 
 export async function processStepDeliveries(
   db: D1Database,
   lineClient: LineClient,
   workerUrl?: string,
+  quotaEnv?: QuotaEnv,
 ): Promise<void> {
+  // Crash recovery: a claim (active→delivering) that never got released means
+  // the worker died mid-delivery — without this, the enrollment is stranded
+  // forever because the due query only picks up 'active' rows. Reclaim after
+  // 5 minutes (at-least-once: a crash after the LINE push but before advance
+  // re-sends that step once).
+  const recovered = await recoverStuckDeliveries(db);
+  if (recovered > 0) {
+    console.warn(`[step-delivery] recovered ${recovered} stuck 'delivering' enrollment(s)`);
+  }
+
+  // Enrollments stay untouched; the next tick re-evaluates once under quota.
+  // While a monthly limit is configured, this tick's sends are additionally
+  // capped to the remaining budget (max - used), computed once up front — no
+  // per-send re-query. Without that cap a tick could overshoot the limit by
+  // up to MAX_SENDS_PER_CRON deliveries. A friends-only limit keeps the
+  // previous behavior (block when exceeded, otherwise the full batch size).
+  let sendBudget = MAX_SENDS_PER_CRON;
+  if (quotaEnv && quotaEnabled(quotaEnv)) {
+    const usage = await getQuotaUsage(db, quotaEnv);
+    if (usage.exceeded) return;
+    if (usage.monthlyMessages.max > 0) {
+      sendBudget = Math.min(sendBudget, usage.monthlyMessages.max - usage.monthlyMessages.used);
+      if (sendBudget <= 0) return;
+    }
+  }
+
   const now = jstNow();
   const dueFriendScenarios = await getFriendScenariosDueForDelivery(db, now);
 
   let sendCount = 0;
+  let attemptCount = 0;
   for (let i = 0; i < dueFriendScenarios.length; i++) {
-    if (sendCount >= MAX_SENDS_PER_CRON) break;
+    if (sendCount >= sendBudget || attemptCount >= MAX_ATTEMPTS_PER_CRON) break;
     const fs = dueFriendScenarios[i];
+    attemptCount++;
     try {
       // Stealth: add small random delay between deliveries to avoid burst patterns
       if (i > 0) {
@@ -115,9 +165,56 @@ export async function processStepDeliveries(
       if (sent) sendCount++;
     } catch (err) {
       console.error(`Error processing friend_scenario ${fs.id}:`, err);
-      // Continue with next one
+      // A permanent LINE 4xx (invalid/unreachable recipient, invalid payload,
+      // unauthorized channel, etc.) must not be recovered and retried forever.
+      // 408/409/429 are transient and retain the existing 5-minute recovery.
+      if (isPermanentLineDeliveryError(err)) {
+        await pauseFriendScenarioDelivery(db, fs.id);
+        console.warn(
+          `[step-delivery] paused enrollment=${fs.id} after permanent LINE ${getLineApiErrorStatus(err)}`,
+        );
+      }
+      // Continue with next one.
     }
   }
+}
+
+/**
+ * Resolve the account-specific friend that an account-bound scenario may
+ * safely message.
+ *
+ * - Same-account enrollment: use it directly.
+ * - UUID-linked cross-account enrollment: use the friend row belonging to the
+ *   scenario account.
+ * - OAuth-before-webhook legacy row (line_account_id NULL): the row's LINE user
+ *   id was issued in the scenario account context, so allow one attempt with
+ *   the scenario token. A permanent 4xx pauses it.
+ * - A friend explicitly belonging to another account is never sent through a
+ *   fallback/default token when no linked destination exists.
+ */
+export async function resolveScenarioDeliveryFriend(
+  db: D1Database,
+  enrolledFriend: Friend,
+  scenarioAccountId: string | null,
+): Promise<Friend | null> {
+  if (!scenarioAccountId || enrolledFriend.line_account_id === scenarioAccountId) {
+    return enrolledFriend;
+  }
+
+  if (enrolledFriend.user_id) {
+    const linked = await db
+      .prepare(
+        `SELECT * FROM friends
+         WHERE user_id = ? AND line_account_id = ?
+         ORDER BY is_following DESC, updated_at DESC
+         LIMIT 1`,
+      )
+      .bind(enrolledFriend.user_id, scenarioAccountId)
+      .first<Friend>();
+    if (linked) return linked.is_following ? linked : null;
+  }
+
+  return enrolledFriend.line_account_id === null ? enrolledFriend : null;
 }
 
 async function processSingleDelivery(
@@ -138,18 +235,36 @@ async function processSingleDelivery(
   const claimed = await claimFriendScenarioForDelivery(db, fs.id, fs.current_step_order);
   if (!claimed) return false;
 
-  const friend = await getFriendById(db, fs.friend_id);
-  if (!friend || !friend.is_following) {
+  const enrolledFriend = await getFriendById(db, fs.friend_id);
+  if (!enrolledFriend) {
     await completeFriendScenario(db, fs.id);
     return false;
   }
 
-  // Fetch scenario row for delivery_mode (needed by computeNextDeliveryAt below)
+  // Fetch scenario account together with delivery_mode. Account-bound
+  // scenarios must use that account's friend identity and token.
   const scenarioRow = await db
-    .prepare(`SELECT delivery_mode FROM scenarios WHERE id = ?`)
+    .prepare(`SELECT delivery_mode, line_account_id FROM scenarios WHERE id = ?`)
     .bind(fs.scenario_id)
-    .first<{ delivery_mode: DeliveryMode }>();
+    .first<{ delivery_mode: DeliveryMode; line_account_id: string | null }>();
   if (!scenarioRow) {
+    await completeFriendScenario(db, fs.id);
+    return false;
+  }
+
+  const friend = await resolveScenarioDeliveryFriend(
+    db,
+    enrolledFriend,
+    scenarioRow.line_account_id,
+  );
+  if (!friend) {
+    await pauseFriendScenarioDelivery(db, fs.id);
+    console.warn(
+      `[step-delivery] paused enrollment=${fs.id}: no following friend for scenario account=${scenarioRow.line_account_id}`,
+    );
+    return false;
+  }
+  if (!friend.is_following) {
     await completeFriendScenario(db, fs.id);
     return false;
   }
@@ -191,7 +306,11 @@ async function processSingleDelivery(
         const jumpStep = steps.find((s) => s.step_order === currentStep.next_step_on_false);
         if (jumpStep) {
           const jitteredDate = jitterDeliveryTime(nextDeliveryFor(jumpStep));
-          await advanceFriendScenario(db, fs.id, currentStep.step_order, jitteredDate.toISOString().slice(0, -1) + '+09:00');
+          // Advance to just before the jump target so the next tick's
+          // `find(step_order > current_step_order)` selects jumpStep itself.
+          // Passing currentStep.step_order here (pre-fix) delivered the
+          // sequentially-next step and silently ignored next_step_on_false.
+          await advanceFriendScenario(db, fs.id, jumpStep.step_order - 1, jitteredDate.toISOString().slice(0, -1) + '+09:00');
           return false;
         }
       }
@@ -213,27 +332,32 @@ async function processSingleDelivery(
   // Expand template variables ({{name}}, {{uid}}, {{auth_url:CHANNEL_ID}}, {{metadata.KEY}}, etc.)
   const resolvedMeta = await resolveMetadata(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
   const friendWithMeta = { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1];
-  const expandedContent = expandVariables(resolved.messageContent, friendWithMeta, workerUrl);
-  // Auto-wrap URLs with tracking links (text with URLs → Flex with button)
-  let trackedType: string = resolved.messageType;
-  let trackedContent = expandedContent;
-  if (workerUrl) {
-    const { autoTrackContent } = await import('./auto-track.js');
-    const tracked = await autoTrackContent(db, resolved.messageType, expandedContent, workerUrl);
-    trackedType = tracked.messageType;
-    trackedContent = tracked.content;
-  }
-  const message = buildMessage(trackedType, trackedContent);
+  const expandedContent = expandVariables(resolved.messageContent, friendWithMeta, workerUrl, resolved.messageType);
+  // Auto-wrap URLs with tracking links + bake f=<friendId> into /t links —
+  // shared pipeline with the instant first-step push (immediate-first-step.ts).
+  // リンクの所有アカウントは実際に配信するアカウント (= friend の account) に合わせる
+  const friendAccountId = friend.line_account_id;
+  const deliveryAccountId = scenarioRow.line_account_id ?? friendAccountId;
+  const { decorateForFriendPush } = await import('./auto-track.js');
+  const tracked = await decorateForFriendPush(db, resolved.messageType, expandedContent, workerUrl, {
+    lineAccountId: deliveryAccountId ?? null,
+    friendId: friend.id,
+  });
+  const message = buildMessage(tracked.messageType, tracked.content);
   // Resolve the correct LINE client for this friend's account
   let deliveryClient = lineClient;
-  const friendAccountId = (friend as unknown as Record<string, string | null>).line_account_id;
-  if (friendAccountId) {
+  if (deliveryAccountId) {
     const { getLineAccountById } = await import('@line-crm/db');
-    const account = await getLineAccountById(db, friendAccountId);
-    if (account) {
-      const { LineClient: LC } = await import('@line-crm/line-sdk');
-      deliveryClient = new LC(account.channel_access_token);
+    const account = await getLineAccountById(db, deliveryAccountId);
+    if (!account) {
+      await pauseFriendScenarioDelivery(db, fs.id);
+      console.warn(
+        `[step-delivery] paused enrollment=${fs.id}: missing LINE account=${deliveryAccountId}`,
+      );
+      return false;
     }
+    const { LineClient: LC } = await import('@line-crm/line-sdk');
+    deliveryClient = new LC(account.channel_access_token);
   }
   await deliveryClient.pushMessage(friend.line_user_id, [message]);
 
@@ -244,10 +368,10 @@ async function processSingleDelivery(
   const logPayload = messageToLogPayload(message);
   await db
     .prepare(
-      `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, template_id_at_send, created_at)
-       VALUES (?, ?, 'outgoing', ?, ?, NULL, ?, 'scenario', ?, ?)`,
+      `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, template_id_at_send, line_account_id, created_at)
+       VALUES (?, ?, 'outgoing', ?, ?, NULL, ?, 'scenario', ?, ?, ?)`,
     )
-    .bind(logId, friend.id, logPayload.messageType, logPayload.content, currentStep.id, resolved.templateIdAtSend, jstNow())
+    .bind(logId, friend.id, logPayload.messageType, logPayload.content, currentStep.id, resolved.templateIdAtSend, deliveryAccountId, jstNow())
     .run();
 
   // Determine next step (find the step after currentStep in the sorted list)
@@ -274,48 +398,131 @@ async function processSingleDelivery(
   return true;
 }
 
-async function evaluateCondition(
+/** Supported scenario step condition_type values evaluated at delivery time. */
+export const SUPPORTED_CONDITION_TYPES = [
+  'tag_exists',
+  'tag_not_exists',
+  'metadata_equals',
+  'metadata_not_equals',
+] as const;
+export type ConditionType = (typeof SUPPORTED_CONDITION_TYPES)[number];
+
+export function isSupportedConditionType(value: unknown): value is ConditionType {
+  return typeof value === 'string' && (SUPPORTED_CONDITION_TYPES as readonly string[]).includes(value);
+}
+
+/**
+ * Evaluate a scenario step's condition_type/condition_value at delivery time.
+ *
+ * Semantics:
+ *  - condition_type null/empty (no condition configured) → `true` (deliver normally).
+ *  - condition_type set but condition_value missing/empty → `false` (skip + log).
+ *    This is the same OSS issue #120 over-delivery pattern: a configured condition with
+ *    no value would otherwise match every friend, e.g. tag_not_exists with empty value
+ *    binds '' into the SQL and returns 0 rows → "tag absent" for everyone.
+ *  - unknown condition_type or malformed condition_value JSON → `false` (skip + log).
+ *  - condition_type + condition_value valid → actually evaluate.
+ */
+export async function evaluateCondition(
   db: D1Database,
   friendId: string,
   step: { condition_type: string | null; condition_value: string | null },
 ): Promise<boolean> {
-  if (!step.condition_type || !step.condition_value) return true;
+  // No condition configured at all → deliver as usual.
+  if (!step.condition_type) return true;
+
+  if (!isSupportedConditionType(step.condition_type)) {
+    console.error(
+      `[scenario] unknown condition_type "${step.condition_type}" for friend=${friendId} — skipping step. ` +
+        `Supported types: ${SUPPORTED_CONDITION_TYPES.join(', ')}`,
+    );
+    return false;
+  }
+
+  if (!step.condition_value) {
+    console.error(
+      `[scenario] condition_type=${step.condition_type} is set but condition_value is empty for friend=${friendId} — skipping step`,
+    );
+    return false;
+  }
 
   switch (step.condition_type) {
     case 'tag_exists': {
       const tag = await db
-        .prepare('SELECT 1 FROM friend_tags WHERE friend_id = ? AND tag_id = ?')
-        .bind(friendId, step.condition_value)
+        .prepare(
+          `SELECT 1 FROM friend_tags ft
+           INNER JOIN friends tagged_friend ON tagged_friend.id = ft.friend_id
+           WHERE ft.tag_id = ?
+             AND (
+               tagged_friend.id = ?
+               OR tagged_friend.user_id = (
+                 SELECT user_id FROM friends WHERE id = ? AND user_id IS NOT NULL
+               )
+             )
+           LIMIT 1`,
+        )
+        .bind(step.condition_value, friendId, friendId)
         .first();
       return !!tag;
     }
     case 'tag_not_exists': {
       const tag = await db
-        .prepare('SELECT 1 FROM friend_tags WHERE friend_id = ? AND tag_id = ?')
-        .bind(friendId, step.condition_value)
+        .prepare(
+          `SELECT 1 FROM friend_tags ft
+           INNER JOIN friends tagged_friend ON tagged_friend.id = ft.friend_id
+           WHERE ft.tag_id = ?
+             AND (
+               tagged_friend.id = ?
+               OR tagged_friend.user_id = (
+                 SELECT user_id FROM friends WHERE id = ? AND user_id IS NOT NULL
+               )
+             )
+           LIMIT 1`,
+        )
+        .bind(step.condition_value, friendId, friendId)
         .first();
       return !tag;
     }
-    case 'metadata_equals': {
-      const { key, value } = JSON.parse(step.condition_value) as { key: string; value: unknown };
-      const friend = await db
-        .prepare('SELECT metadata FROM friends WHERE id = ?')
-        .bind(friendId)
-        .first<{ metadata: string }>();
-      const metadata = JSON.parse(friend?.metadata || '{}') as Record<string, unknown>;
-      return metadata[key] === value;
-    }
+    case 'metadata_equals':
     case 'metadata_not_equals': {
-      const { key, value } = JSON.parse(step.condition_value) as { key: string; value: unknown };
+      let raw: unknown;
+      try {
+        raw = JSON.parse(step.condition_value);
+      } catch {
+        console.error(
+          `[scenario] malformed condition_value JSON for friend=${friendId} type=${step.condition_type} — skipping step`,
+        );
+        return false;
+      }
+      if (
+        !raw ||
+        typeof raw !== 'object' ||
+        Array.isArray(raw) ||
+        typeof (raw as { key?: unknown }).key !== 'string' ||
+        !('value' in (raw as Record<string, unknown>))
+      ) {
+        // 既存行や直接 INSERT された行で {"key":"x"} のように value が欠落しているケースは
+        // friend.metadata[x] === undefined と比較されて「key 不在の全友だち」に一致する
+        // (= 同じ OSS issue #120 の over-delivery を再現する) ので明示的にスキップする。
+        console.error(
+          `[scenario] condition_value missing key/value for friend=${friendId} type=${step.condition_type} — skipping step`,
+        );
+        return false;
+      }
+      const parsed = raw as { key: string; value: unknown };
       const friend = await db
-        .prepare('SELECT metadata FROM friends WHERE id = ?')
+        .prepare('SELECT user_id, metadata FROM friends WHERE id = ?')
         .bind(friendId)
-        .first<{ metadata: string }>();
-      const metadata = JSON.parse(friend?.metadata || '{}') as Record<string, unknown>;
-      return metadata[key] !== value;
+        .first<{ user_id: string | null; metadata: string | null }>();
+      const metadata = await resolveMetadata(db, {
+        user_id: friend?.user_id ?? null,
+        metadata: friend?.metadata ?? null,
+      });
+      const actual = metadata[parsed.key];
+      return step.condition_type === 'metadata_equals'
+        ? actual === parsed.value
+        : actual !== parsed.value;
     }
-    default:
-      return true;
   }
 }
 

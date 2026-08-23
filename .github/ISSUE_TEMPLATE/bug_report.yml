@@ -1,0 +1,44 @@
+name: バグ報告
+description: 不具合を報告する
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: 概要
+      description: 不具合の内容を1〜2行で。
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 再現手順
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待する挙動
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 実際の挙動
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 環境
+      description: 本番／staging、ブラウザ、LIFFか直接アクセスか、再現時刻など。
+  - type: textarea
+    id: logs
+    attributes:
+      label: ログ・スクリーンショット（任意）
