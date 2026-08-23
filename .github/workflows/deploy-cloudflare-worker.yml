@@ -36,13 +36,18 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          D1_DATABASE_NAME: ${{ env.DEPLOY_ENV == 'staging' && secrets.D1_DATABASE_NAME_STAGING || secrets.D1_DATABASE_NAME }}
         run: |
           test -n "$CLOUDFLARE_API_TOKEN"
           test -n "$CLOUDFLARE_ACCOUNT_ID"
-          test -n "$D1_DATABASE_NAME"
 
-          npx wrangler d1 execute "$D1_DATABASE_NAME" --remote --command \
+          # 名前 (line-crm) 単独でのlookupは本番アカウント内の別DBに解決される
+          # 事故が発生した (2026-08-23)。wrangler.toml の [env.production]/[env.staging]
+          # に記載済みの確定IDへ、binding名 (DB) + --env で解決させ曖昧さを無くす。
+          D1EX() {
+            npx wrangler d1 execute DB --config apps/worker/wrangler.toml --env "$DEPLOY_ENV" --remote "$@"
+          }
+
+          D1EX --command \
             "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
 
           # 本fork運用開始時点 (upstream初回同期 2026-08-23) より前の migrations は
@@ -56,24 +61,22 @@ jobs:
             if [ -n "$VALUES_SQL" ]; then VALUES_SQL="${VALUES_SQL},"; fi
             VALUES_SQL="${VALUES_SQL}('${name}', datetime('now'))"
           done
-          npx wrangler d1 execute "$D1_DATABASE_NAME" --remote --command \
+          D1EX --command \
             "INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES ${VALUES_SQL}"
 
-          seeded=$(npx wrangler d1 execute "$D1_DATABASE_NAME" --remote \
-            --command "SELECT COUNT(*) as c FROM _migrations" --json \
+          seeded=$(D1EX --command "SELECT COUNT(*) as c FROM _migrations" --json \
             | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));console.log(d[0]?.results?.[0]?.c||0)")
           echo "_migrations row count after seeding: $seeded"
           test "$seeded" -ge 50
 
           for f in $(ls packages/db/migrations/*.sql | sort); do
             name=$(basename "$f")
-            applied=$(npx wrangler d1 execute "$D1_DATABASE_NAME" --remote \
-              --command "SELECT name FROM _migrations WHERE name = '${name}'" --json \
+            applied=$(D1EX --command "SELECT name FROM _migrations WHERE name = '${name}'" --json \
               | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));console.log(d[0]?.results?.length||0)")
             if [ "$applied" = "0" ]; then
               echo "Applying: $name"
-              npx wrangler d1 execute "$D1_DATABASE_NAME" --remote --file="$f"
-              npx wrangler d1 execute "$D1_DATABASE_NAME" --remote --command \
+              D1EX --file="$f"
+              D1EX --command \
                 "INSERT INTO _migrations (name, applied_at) VALUES ('${name}', datetime('now'))"
             else
               echo "Skipped: $name"
