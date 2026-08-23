@@ -84,7 +84,7 @@ import { trafficPools } from './routes/traffic-pools.js';
 import { meetCallback } from './routes/meet-callback.js';
 import { messageTemplates } from './routes/message-templates.js';
 import { lpPages } from './routes/lp-pages.js';
-import { getLpPageBySlug, getLineAccountById } from '@line-crm/db';
+import { getLpPageBySlug } from '@line-crm/db';
 import dedupPreview from './routes/dedup-preview.js';
 import { profileRefresh } from './routes/profile-refresh.js';
 import { richMenuGroups } from './routes/rich-menu-groups.js';

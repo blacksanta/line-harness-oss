@@ -31,7 +31,9 @@
     "027_dedup_delivery.sql",
     "028_messages_log_source.sql",
     "029_account_management_v2.sql",
+    "029_lp_pages.sql",
     "030_dedup_progress.sql",
+    "030_lp_pages_blocks.sql",
     "031_batch_lock_at.sql",
     "032_messages_log_line_account_id.sql",
     "033_auto_replies_template_id.sql",
@@ -76,5 +78,5 @@
     "069_rich_menu_selected.sql",
     "070_admin_sso_jti.sql"
   ],
-  "migrationCount": 75
+  "migrationCount": 77
 }
