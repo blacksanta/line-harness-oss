@@ -9,6 +9,7 @@ on:
     paths:
       - 'apps/web/**'
       - 'packages/shared/**'
+      - 'packages/update-engine/**'
       - '.github/workflows/deploy-pages.yml'
 
 jobs:
@@ -25,7 +26,7 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @line-crm/shared build
+      - run: pnpm --filter @line-crm/shared --filter @line-harness/update-engine build
 
       - run: pnpm --filter web build
         env:

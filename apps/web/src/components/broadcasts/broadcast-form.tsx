@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Tag } from '@line-crm/shared'
 import { api, eventsApi, type ApiBroadcast, type EventListItem } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
@@ -30,10 +30,13 @@ interface FormState {
   sendNow: boolean
   accountIds: string[]
   dedupPriority: string[]
+  trackLinks: boolean
 }
 
 export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFormProps) {
   const { selectedAccountId } = useAccount()
+  // Network timeout後の再クリックでも同じ作成要求として扱い、二重予約を防ぐ。
+  const createIdempotencyKey = useRef(crypto.randomUUID())
   // 「リンクするイベント」セレクタ用: 公開中の events を取得して
   // 選択された event の LIFF URL (テンプレ) を message に挿入する。
   const [linkableEvents, setLinkableEvents] = useState<EventListItem[]>([])
@@ -55,6 +58,7 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
     sendNow: true,
     accountIds: [],
     dedupPriority: [],
+    trackLinks: true,
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -93,12 +97,13 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
         lineAccountId: form.targetType === 'multi-account-dedup' ? null : (selectedAccountId || null),
         accountIds: form.targetType === 'multi-account-dedup' ? form.accountIds : undefined,
         dedupPriority: form.targetType === 'multi-account-dedup' ? form.dedupPriority : undefined,
+        trackLinks: form.trackLinks,
         // datetime-local returns YYYY-MM-DDTHH:mm in JST wall-clock time
         // Append +09:00 so new Date() parses correctly for epoch comparisons
         scheduledAt: form.sendNow || !form.scheduledAt
           ? null
           : form.scheduledAt + ':00.000+09:00',
-      })
+      }, { idempotencyKey: createIdempotencyKey.current })
       if (res.success) {
         onSuccess()
       } else {
@@ -246,6 +251,23 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
             </div>
           )}
         </div>
+
+        {/* Link tracking toggle */}
+        {form.messageType !== 'image' && (
+          <div>
+            <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.trackLinks}
+                onChange={(e) => setForm({ ...form, trackLinks: e.target.checked })}
+              />
+              このメッセージでリンクを短縮する（クリック計測）
+            </label>
+            <p className="text-xs text-gray-500 mt-1 ml-6">
+              ONにすると本文のURLが計測用リンク（/t/…）に自動変換されます。OFFの場合はURLをそのまま送信します。
+            </p>
+          </div>
+        )}
 
         {/* Target */}
         <div>

@@ -1,0 +1,133 @@
+name: Deploy Cloudflare Worker
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, staging]
+    paths:
+      - 'apps/worker/**'
+      - 'apps/liff/**'
+      - 'packages/db/**'
+      - 'packages/shared/**'
+      - 'packages/line-sdk/**'
+      - 'packages/update-engine/**'
+      - '.github/workflows/deploy-cloudflare-worker.yml'
+
+jobs:
+  deploy:
+    if: github.repository != 'Shudesu/line-harness-oss' && vars.LINE_HARNESS_CLOUDFLARE_DEPLOY == 'true'
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_ENV: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @line-crm/shared --filter @line-crm/line-sdk --filter @line-crm/db --filter @line-harness/update-engine build
+
+      - name: Run pending D1 migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          D1_DATABASE_NAME: ${{ env.DEPLOY_ENV == 'staging' && secrets.D1_DATABASE_NAME_STAGING || secrets.D1_DATABASE_NAME }}
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$D1_DATABASE_NAME"
+
+          npx wrangler d1 execute "$D1_DATABASE_NAME" --remote --command \
+            "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+
+          # 本fork運用開始時点 (upstream初回同期 2026-08-23) より前の migrations は
+          # 過去に `wrangler d1 execute --file` の手動運用で既に本番/staging DBへ
+          # 反映済みのため、_migrations 追跡テーブルへ既存分としてシードする。
+          # シードしないと初回実行時に全 migrations を先頭から再実行しようとして
+          # 「duplicate column / table already exists」で失敗する (2026-08-23 発生)。
+          LEGACY_MIGRATIONS="001_round2.sql 002_round3.sql 003_entry_routes.sql 004_friend_metadata.sql 005_step_branching.sql 006_tracked_links.sql 007_forms.sql 008_multi_account.sql 009_delivery_type.sql 009_token_expiry.sql 010_ad_conversions.sql 011_staff_members.sql 012_alt_text.sql 013_broadcast_insights.sql 014_form_submit_message.sql 015_auto_reply_account.sql 016_traffic_pools.sql 017_form_webhook.sql 018_broadcast_queue.sql 018_message_templates.sql 019_pool_accounts.sql 020_tracked_link_intro.sql 021_tracked_link_reward.sql 022_friend_first_tracked_link.sql 023_friend_ig_igsid.sql 024_form_opens.sql 025_account_settings.sql 026_delivery_type_test.sql 027_dedup_delivery.sql 028_messages_log_source.sql 029_account_management_v2.sql 029_lp_pages.sql 030_dedup_progress.sql 030_lp_pages_blocks.sql 031_batch_lock_at.sql 032_messages_log_line_account_id.sql 033_auto_replies_template_id.sql 034_webhook_secret_required.sql 035_rich_menu_groups.sql 036_booking.sql 037_event_booking.sql 037_scenario_delivery_mode.sql 038_entry_routes_pool_and_push.sql 038_scenario_templates_and_stats.sql 039_default_main_pool.sql 040_events_multi_account.sql 041_account_og_defaults.sql 041_event_custom_messages.sql 042_tracked_links_og.sql 043_events_og.sql 044_forms_og.sql 045_menus_auto_tag.sql"
+          VALUES_SQL=""
+          for name in $LEGACY_MIGRATIONS; do
+            if [ -n "$VALUES_SQL" ]; then VALUES_SQL="${VALUES_SQL},"; fi
+            VALUES_SQL="${VALUES_SQL}('${name}', datetime('now'))"
+          done
+          npx wrangler d1 execute "$D1_DATABASE_NAME" --remote --command \
+            "INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES ${VALUES_SQL}"
+
+          seeded=$(npx wrangler d1 execute "$D1_DATABASE_NAME" --remote \
+            --command "SELECT COUNT(*) as c FROM _migrations" --json \
+            | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));console.log(d[0]?.results?.[0]?.c||0)")
+          echo "_migrations row count after seeding: $seeded"
+          test "$seeded" -ge 50
+
+          for f in $(ls packages/db/migrations/*.sql | sort); do
+            name=$(basename "$f")
+            applied=$(npx wrangler d1 execute "$D1_DATABASE_NAME" --remote \
+              --command "SELECT name FROM _migrations WHERE name = '${name}'" --json \
+              | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));console.log(d[0]?.results?.length||0)")
+            if [ "$applied" = "0" ]; then
+              echo "Applying: $name"
+              npx wrangler d1 execute "$D1_DATABASE_NAME" --remote --file="$f"
+              npx wrangler d1 execute "$D1_DATABASE_NAME" --remote --command \
+                "INSERT INTO _migrations (name, applied_at) VALUES ('${name}', datetime('now'))"
+            else
+              echo "Skipped: $name"
+            fi
+          done
+
+      - name: Build Worker and LIFF assets
+        run: pnpm --filter worker build
+        env:
+          VITE_LIFF_ID: ${{ env.DEPLOY_ENV == 'staging' && vars.VITE_LIFF_ID_STAGING || vars.VITE_LIFF_ID }}
+          VITE_BOT_BASIC_ID: ${{ vars.VITE_BOT_BASIC_ID }}
+          VITE_CALENDAR_CONNECTION_ID: ${{ vars.VITE_CALENDAR_CONNECTION_ID }}
+
+      - name: Patch wrangler config
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          D1_DATABASE_NAME: ${{ env.DEPLOY_ENV == 'staging' && secrets.D1_DATABASE_NAME_STAGING || secrets.D1_DATABASE_NAME }}
+          D1_DATABASE_ID: ${{ env.DEPLOY_ENV == 'staging' && secrets.D1_DATABASE_ID_STAGING || secrets.D1_DATABASE_ID }}
+          WORKER_NAME: ${{ env.DEPLOY_ENV == 'staging' && vars.WORKER_NAME_STAGING || vars.WORKER_NAME || 'your-worker-name' }}
+          # Admin CORS config — set these as repo Variables when the admin panel
+          # and the Worker API are on different origins (e.g. *.pages.dev admin
+          # + *.workers.dev API). Baking them into the deployed config (vars)
+          # means every deploy carries them, so they can't be silently dropped
+          # the way a manually-set dashboard variable is on redeploy.
+          ADMIN_ORIGIN: ${{ env.DEPLOY_ENV == 'staging' && vars.ADMIN_ORIGIN_STAGING || vars.ADMIN_ORIGIN }}
+          ADMIN_ALLOW_CROSS_SITE: ${{ vars.ADMIN_ALLOW_CROSS_SITE }}
+          WORKER_URL: ${{ env.DEPLOY_ENV == 'staging' && vars.WORKER_URL_STAGING || vars.WORKER_URL }}
+        run: |
+          test -n "$D1_DATABASE_ID"
+          cd apps/worker
+          sed -i \
+            -e "s|\"account_id\":\"[^\"]*\"|\"account_id\":\"${CLOUDFLARE_ACCOUNT_ID}\"|g" \
+            -e "s|\"database_name\":\"[^\"]*\"|\"database_name\":\"${D1_DATABASE_NAME}\"|g" \
+            -e "s|\"database_id\":\"[^\"]*\"|\"database_id\":\"${D1_DATABASE_ID}\"|g" \
+            dist/line_harness/wrangler.json
+          # Inject admin CORS vars into the deployed config when ADMIN_ORIGIN is
+          # set. ADMIN_ALLOW_CROSS_SITE defaults to "true" (SameSite=None; Secure
+          # cookies) since cross-origin admin/API is the case that needs it.
+          if [ -n "$ADMIN_ORIGIN" ]; then
+            tmp="$(mktemp)"
+            jq --arg o "$ADMIN_ORIGIN" --arg x "$ADMIN_ALLOW_CROSS_SITE" --arg w "$WORKER_URL" '
+              .vars.ADMIN_ORIGIN = $o
+              | .vars.ADMIN_ALLOW_CROSS_SITE = (if $x == "" then "true" else $x end)
+              | (if $w != "" then .vars.WORKER_URL = $w else . end)
+            ' dist/line_harness/wrangler.json > "$tmp" && mv "$tmp" dist/line_harness/wrangler.json
+            echo "Patched admin CORS vars: ADMIN_ORIGIN=$ADMIN_ORIGIN ADMIN_ALLOW_CROSS_SITE=${ADMIN_ALLOW_CROSS_SITE:-true}"
+          fi
+
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        env:
+          WORKER_NAME: ${{ env.DEPLOY_ENV == 'staging' && vars.WORKER_NAME_STAGING || vars.WORKER_NAME || 'your-worker-name' }}
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/worker
+          command: deploy --config dist/line_harness/wrangler.json --name ${{ env.WORKER_NAME }}

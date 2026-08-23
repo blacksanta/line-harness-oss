@@ -1,6 +1,6 @@
 # OSS 同期憲章 (OSS Sync Charter)
 
-> LINE Harness プロジェクトにおける Private ↔ OSS リポジトリの同期・運用ルール。
+> L Harness プロジェクトにおける Private ↔ OSS リポジトリの同期・運用ルール。
 > 全コントリビューター・AIエージェントはこの憲章に従うこと。
 
 ---
@@ -18,17 +18,47 @@
 
 ## 2. 同期フロー
 
-### 2.1 Private → OSS（手動運用）
+### 2.1 Private → OSS（PR ベース運用）
 
 ```
-Private push → bash scripts/sync-oss.sh を手動実行 → OSS に反映
+Private PR merge → OSS sync branch → OSS PR → OSS CI → OSS merge
 ```
 
-- `.github/workflows/sync-oss.yml` は意図的に失敗運用 (即時公開でうっかり OSS に出る事故防止)
-- OSS に反映したいタイミングで `bash scripts/sync-oss.sh` を手動実行
-- `rsync --delete` で同期（除外ファイルあり）
-- シークレット自動置換（sed）
-- リーク検知で失敗時は同期中止
+**OSS `main` への直 push は禁止。必ず OSS PR を作る。**
+
+- `scripts/sync-oss.sh` は dry-run がデフォルト
+- 実書き込みは `--apply` が必要
+- `--apply` は OSS checkout が `main` / `master` の場合に失敗する
+- `rsync --delete` は使わない
+- 除外リスト・秘匿化ルール・リーク検知パターンは `scripts/oss-*` に集約する
+- `.github/workflows/sync-oss.yml` も同じ `scripts/sync-oss.sh` を呼び出し、OSS branch + PR を作る
+- OSS-only の README / community health files / GitHub templates / workflows は同期対象外として保護する
+
+#### ローカル dry-run
+
+```bash
+cd /Users/ai/claudecode/line-harness
+bash scripts/sync-oss.sh \
+  --dry-run \
+  --oss-dir /Users/ai/claudecode/line-harness-oss
+```
+
+#### ローカル apply
+
+OSS 側は必ず専用 worktree / branch にする。
+
+```bash
+git -C /Users/ai/claudecode/line-harness-oss worktree add \
+  /Users/ai/claudecode/.worktrees/line-harness-oss/sync-example \
+  main -b sync/private-example
+
+cd /Users/ai/claudecode/line-harness
+bash scripts/sync-oss.sh \
+  --apply \
+  --oss-dir /Users/ai/claudecode/.worktrees/line-harness-oss/sync-example
+
+git -C /Users/ai/claudecode/.worktrees/line-harness-oss/sync-example status
+```
 
 ### 2.2 OSS → Private（手動・必須）
 
@@ -37,7 +67,7 @@ OSS PR マージ → Private に cherry-pick → Private push → sync で OSS �
 ```
 
 **OSS で PR がマージされたら、次の Private → OSS sync の前に必ず Private に取り込むこと。**
-取り込まないと sync の `rsync --delete` で OSS 側の変更が消える。
+取り込まないと、次の Private → OSS sync PR で同じ領域の変更が競合・上書きされる。
 
 #### 手順
 
@@ -54,23 +84,46 @@ git apply /tmp/pr<番号>.patch --3way
 git add -A
 git commit -m "feat: <説明> (from OSS PR #<番号>)"
 
-# 4. push（sync-oss.yml が自動で OSS に反映）
+# 4. push（必要に応じて sync-oss.yml を手動実行して OSS PR を作る）
 git push
 ```
 
-### 2.3 フローチャート
+### 2.3 OSS Issue / PR 対応の Definition of Done
+
+OSS の Issue / PR は、ユーザーが自分で検証しなくてもよい状態まで AI エージェントが責任を持って進める。完了条件は次の通り。
+
+- [ ] 対象 Issue / PR の再現条件・期待動作・影響範囲を整理した
+- [ ] 修正は必ず Private リポで行った（OSS への直接変更・直 push はしない）
+- [ ] 仕様の分岐、fallback、過去データ互換性をコード上で扱った
+- [ ] 回帰テストまたは source-level test を追加/更新した
+- [ ] 変更範囲に応じた typecheck / build / test を実行し、結果を記録した
+- [ ] `git diff --check` を通した
+- [ ] OSS sync 前に `scripts/sync-oss.sh --dry-run` で公開差分を確認した
+- [ ] OSS sync PR を作成し、OSS CI が通ったことを確認した
+- [ ] 対応した Issue / PR に、修正内容・検証コマンド・同期 PR / commit を返信した
+- [ ] 本番影響がある場合は private 側のデプロイ有無とロールバック方針を明記した
+
+「コードを書いた」だけでは完了ではない。GitHub 上で保守されていることが外部から分かる状態、つまり Issue / PR に検証済みの返信が残り、OSS 側に同期 PR が出ている状態を完了とする。
+
+### 2.4 OSS PR Sandbox Merge Gate
+
+OSS PR は、merge 前に sandbox gate を通す。特に auth / CORS / LIFF / migration / webhook / scenario / broadcast / cron に触る PR は、OSS CI 成功だけで merge しない。
+
+詳細手順は `docs/OSS-SANDBOX-MERGE-GATE.md` を参照すること。
+
+### 2.5 フローチャート
 
 ```
-[Private 開発] ──push──→ [GitHub Actions sync] ──→ [OSS 反映]
-                                                        ↑
-[OSS PR マージ] ──cherry-pick──→ [Private に取込] ──push──┘
+[Private 開発] ──merge──→ [OSS sync PR] ──CI──→ [OSS 反映]
+                                                    ↑
+[OSS PR マージ] ──cherry-pick──→ [Private に取込] ──┘
 ```
 
 ---
 
 ## 3. 除外ファイル（OSS に含めないもの）
 
-sync-oss.yml と sync-oss.sh の両方で一致させること。
+同期対象外のファイルは `scripts/oss-sync.excludes` を唯一の真実にすること。
 
 | ファイル/ディレクトリ | 理由 |
 |---------------------|------|
@@ -87,9 +140,11 @@ sync-oss.yml と sync-oss.sh の両方で一致させること。
 | `SPEC.md` | 内部仕様 |
 | `COMPETITOR_FEATURES.md` | 競合分析 |
 | `.github/workflows/` | Private 用 CI/CD |
+| `.github/ISSUE_TEMPLATE/` / `.github/PULL_REQUEST_TEMPLATE.md` / `.github/labeler.yml` | OSS 運用ファイル |
+| `CONTRIBUTING.md` / `SECURITY.md` / `SUPPORT.md` | OSS community health files |
 | `node_modules/` / `dist/` / `.next/` / `apps/web/out/` | ビルド成果物 |
 
-**新しい除外ファイルを追加する場合、sync-oss.yml と sync-oss.sh の両方を更新すること。**
+**新しい除外ファイルを追加する場合、`scripts/oss-sync.excludes` を更新すること。**
 
 ---
 
@@ -97,7 +152,7 @@ sync-oss.yml と sync-oss.sh の両方で一致させること。
 
 ### 4.1 自動置換パターン
 
-sync 時に以下のパターンを自動で置換する。新しいシークレットが追加された場合、両方のスクリプトに追加すること。
+sync 時に以下のパターンを自動で置換する。新しいシークレットが追加された場合、`scripts/oss-secret-redactions.sed` と `scripts/oss-secret-grep.patterns` を更新すること。
 
 | パターン | 置換後 |
 |---------|--------|
@@ -217,7 +272,11 @@ gh release create v0.13.0 --repo Shudesu/line-harness-oss --title "v0.13.0" --no
 
 ### 7.4 ダッシュボード表示バージョン
 
-`apps/web/next.config.ts` がビルド時に root `package.json` を読み、`APP_VERSION` env として注入する。サイドバーの `LINE Harness v{APP_VERSION}` 表示はこの値を使う。手動の env 上書き不要。
+`apps/web/next.config.ts` がビルド時に root `package.json` を読み、`APP_VERSION` env として注入する。サイドバーの `L Harness v{APP_VERSION}` 表示はこの値を使う。手動の env 上書き不要。
+
+Admin UI はスクリーンショットだけでデプロイ元を判別できるよう、`APP_COMMIT_SHA` (GitHub Actions の `GITHUB_SHA`、またはローカル git SHA) と `APP_BUILD_TIME` もビルド時に埋め込み、サイドバーに `build <sha> · <UTC time>` として表示する。
+
+root version だけを変更した場合にも Admin deploy が走るよう、`deploy-web.yml` の path filter には root `package.json` を含める。通常リリースでは `scripts/sync-versions.sh` で `apps/web/package.json` も更新されるが、path filter 側でも root version を明示的に監視して二重に守る。
 
 ### 7.5 バージョン同期チェック
 
@@ -258,8 +317,11 @@ MCP や Claude Code で操作する際の追加ルール。
 ### Private → OSS sync 前
 
 - [ ] 新しいファイルにシークレットが含まれていないか
-- [ ] sync-oss.yml と sync-oss.sh の除外リストが一致しているか
-- [ ] 置換パターンに漏れがないか
+- [ ] `scripts/sync-oss.sh --dry-run` を実行した
+- [ ] OSS 側は専用 branch / worktree になっている
+- [ ] `scripts/oss-sync.excludes` に OSS-only ファイルが含まれている
+- [ ] `scripts/oss-secret-redactions.sed` と `scripts/oss-secret-grep.patterns` に漏れがない
+- [ ] OSS PR を作り、OSS CI が通った
 
 ### OSS PR マージ後
 

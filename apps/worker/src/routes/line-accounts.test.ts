@@ -13,8 +13,19 @@ const dbMocks = {
   updateLineAccountFields: vi.fn(),
   updateLineAccountOrder: vi.fn(),
   deleteLineAccount: vi.fn(),
+  getAccountSetting: vi.fn(),
+  setAccountSetting: vi.fn(),
+  jstNow: vi.fn(() => '2026-08-10T12:00:00.000+09:00'),
 };
 vi.mock('@line-crm/db', () => dbMocks);
+
+const lineClientMocks = {
+  getFollowersInsight: vi.fn(),
+  getFollowerIds: vi.fn(),
+};
+vi.mock('@line-crm/line-sdk', () => ({
+  LineClient: vi.fn().mockImplementation(() => lineClientMocks),
+}));
 
 // Re-import after mock so the module picks up mocked deps.
 const { lineAccounts } = await import('./line-accounts.js');
@@ -71,6 +82,135 @@ const fakeAccount = {
 
 beforeEach(() => {
   for (const fn of Object.values(dbMocks)) fn.mockReset();
+  lineClientMocks.getFollowersInsight.mockReset();
+  lineClientMocks.getFollowerIds.mockReset();
+  dbMocks.getAccountSetting.mockResolvedValue(null);
+  dbMocks.setAccountSetting.mockResolvedValue(undefined);
+  dbMocks.jstNow.mockReturnValue('2026-08-10T12:00:00.000+09:00');
+  lineClientMocks.getFollowerIds.mockResolvedValue({ userIds: [] });
+});
+
+describe('GET /api/line-accounts/:id', () => {
+  const secretAccount = {
+    ...fakeAccount,
+    channel_access_token: 'plaintext-channel-token-WXYZ',
+    channel_secret: 'plaintext-channel-secret-1234',
+    login_channel_secret: 'plaintext-login-secret-5678',
+  };
+
+  // An API key handed to an MCP agent is owner-role. Returning the plaintext
+  // channel token here would let a leaked key take over the LINE channel itself.
+  test('masks secrets for owner instead of returning them in full', async () => {
+    dbMocks.getLineAccountById.mockResolvedValue(secretAccount);
+
+    const app = setupApp('owner');
+    const res = await app.request('/api/line-accounts/acc-1');
+
+    expect(res.status).toBe(200);
+    const raw = await res.text();
+    expect(raw).not.toContain('plaintext-channel-token');
+    expect(raw).not.toContain('plaintext-channel-secret');
+    expect(raw).not.toContain('plaintext-login-secret');
+
+    const body = JSON.parse(raw) as { data: Record<string, unknown> };
+    expect(body.data.channelAccessToken).toBe('****WXYZ');
+    expect(body.data.channelSecret).toBe('****1234');
+    expect(body.data.loginChannelSecret).toBe('****5678');
+  });
+
+  test('omits secret fields entirely for staff role', async () => {
+    dbMocks.getLineAccountById.mockResolvedValue(secretAccount);
+
+    const app = setupApp('staff');
+    const res = await app.request('/api/line-accounts/acc-1');
+
+    const body = (await res.json()) as { data: Record<string, unknown> };
+    expect(body.data.channelAccessToken).toBeUndefined();
+    expect(body.data.channelSecret).toBeUndefined();
+    expect(body.data.loginChannelSecret).toBeUndefined();
+  });
+
+  // An update that touches only non-secret fields still returns the row, so an
+  // unmasked PUT response would hand back the *stored* token — the same read
+  // path the GET masking closes.
+  test('PUT response masks secrets the caller did not supply', async () => {
+    dbMocks.getLineAccountById.mockResolvedValue(secretAccount);
+    dbMocks.updateLineAccountFields.mockResolvedValue(secretAccount);
+    dbMocks.updateLineAccount.mockResolvedValue(secretAccount);
+
+    const app = setupApp('owner');
+    const res = await app.request('/api/line-accounts/acc-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '名前だけ変更' }),
+    });
+
+    expect(res.status).toBe(200);
+    const raw = await res.text();
+    expect(raw).not.toContain('plaintext-channel-token');
+    expect(raw).not.toContain('plaintext-channel-secret');
+    expect(raw).not.toContain('plaintext-login-secret');
+  });
+
+  // Masking null would render as "****" and read as "configured" in the UI.
+  test('keeps unset secrets null rather than masking them into a value', async () => {
+    dbMocks.getLineAccountById.mockResolvedValue({ ...secretAccount, login_channel_secret: null });
+
+    const app = setupApp('owner');
+    const res = await app.request('/api/line-accounts/acc-1');
+
+    const body = (await res.json()) as { data: Record<string, unknown> };
+    expect(body.data.loginChannelSecret).toBeNull();
+  });
+});
+
+describe('GET /api/line-accounts/:id/follower-insight', () => {
+  test('returns LINE follower insight without exposing account token', async () => {
+    dbMocks.getLineAccountById.mockResolvedValue(fakeAccount);
+    lineClientMocks.getFollowersInsight.mockResolvedValue({
+      status: 'ready',
+      followers: 123,
+      targetedReaches: 111,
+      blocks: 4,
+    });
+
+    const app = setupApp('owner');
+    const res = await app.request('/api/line-accounts/acc-1/follower-insight?date=20260616');
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.getLineAccountById).toHaveBeenCalledWith(expect.anything(), 'acc-1');
+    expect(lineClientMocks.getFollowersInsight).toHaveBeenCalledWith('20260616');
+    const body = (await res.json()) as {
+      success: boolean;
+      data: {
+        lineAccountId: string;
+        date: string;
+        status: string;
+        followers: number;
+        targetedReaches: number;
+        blocks: number;
+        channelAccessToken?: string;
+      };
+    };
+    expect(body.success).toBe(true);
+    expect(body.data).toMatchObject({
+      lineAccountId: 'acc-1',
+      date: '20260616',
+      status: 'ready',
+      followers: 123,
+      targetedReaches: 111,
+      blocks: 4,
+    });
+    expect(body.data.channelAccessToken).toBeUndefined();
+  });
+
+  test('rejects missing insight date', async () => {
+    const app = setupApp('owner');
+    const res = await app.request('/api/line-accounts/acc-1/follower-insight');
+
+    expect(res.status).toBe(400);
+    expect(lineClientMocks.getFollowersInsight).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /api/line-accounts', () => {
@@ -437,5 +577,42 @@ describe('PUT /api/line-accounts/:id', () => {
       country: '日本',
       role: '本店',
     });
+  });
+});
+
+describe('GET /api/line-accounts monthly send stat', () => {
+  test('month window starts at JST month start (bound param), not UTC date()', async () => {
+    dbMocks.getLineAccounts.mockResolvedValue([fakeAccount]);
+    // fetchBotProfile hits the network; fail it fast (it degrades to {}).
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false })));
+    try {
+      const executed: { sql: string; params: unknown[] }[] = [];
+      const db = {
+        prepare(sql: string) {
+          const stmt = {
+            params: [] as unknown[],
+            bind(...p: unknown[]) { stmt.params = p; return stmt; },
+            async first() {
+              executed.push({ sql, params: stmt.params });
+              return { count: 0 };
+            },
+          };
+          return stmt;
+        },
+      } as unknown as D1Database;
+
+      const res = await setupApp('owner', db).request('/api/line-accounts');
+      expect(res.status).toBe(200);
+
+      const ml = executed.find((e) => e.sql.includes('FROM messages_log'))!;
+      expect(ml).toBeDefined();
+      // date('now') is UTC in SQLite: between 00:00 and 09:00 JST on the 1st
+      // it still points at the previous month. The route must bind a JST
+      // month-start string in the created_at format instead.
+      expect(ml.sql).not.toContain("date('now', 'start of month')");
+      expect(ml.params[0]).toMatch(/^\d{4}-\d{2}-01T00:00:00\.000$/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
