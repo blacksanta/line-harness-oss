@@ -50,11 +50,17 @@ jobs:
           D1EX --command \
             "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
 
-          # 1回限りの補正: 2026-08-23 の初回実行で「2026-08-23より前は反映済み」と
-          # 一括シードしたが、033 は実際には未反映だった (本番のみ)。誤記録を消し
-          # 下の自己修復ループで実際に再試行させる。
-          D1EX --command \
-            "DELETE FROM _migrations WHERE name = '033_auto_replies_template_id.sql'"
+          # 1回限りの補正: 2026-08-23 の初回実行で「2026-08-23より前 (001〜045) は
+          # 反映済み」と一括シードしたが、本番では033・035など複数件が実際は
+          # 未反映だった (手動運用の抜け漏れ)。52件分の誤記録をまとめて消し、
+          # 下の自己修復ループで全件を実際に再検証させる。
+          LEGACY_MIGRATIONS="001_round2.sql 002_round3.sql 003_entry_routes.sql 004_friend_metadata.sql 005_step_branching.sql 006_tracked_links.sql 007_forms.sql 008_multi_account.sql 009_delivery_type.sql 009_token_expiry.sql 010_ad_conversions.sql 011_staff_members.sql 012_alt_text.sql 013_broadcast_insights.sql 014_form_submit_message.sql 015_auto_reply_account.sql 016_traffic_pools.sql 017_form_webhook.sql 018_broadcast_queue.sql 018_message_templates.sql 019_pool_accounts.sql 020_tracked_link_intro.sql 021_tracked_link_reward.sql 022_friend_first_tracked_link.sql 023_friend_ig_igsid.sql 024_form_opens.sql 025_account_settings.sql 026_delivery_type_test.sql 027_dedup_delivery.sql 028_messages_log_source.sql 029_account_management_v2.sql 029_lp_pages.sql 030_dedup_progress.sql 030_lp_pages_blocks.sql 031_batch_lock_at.sql 032_messages_log_line_account_id.sql 033_auto_replies_template_id.sql 034_webhook_secret_required.sql 035_rich_menu_groups.sql 036_booking.sql 037_event_booking.sql 037_scenario_delivery_mode.sql 038_entry_routes_pool_and_push.sql 038_scenario_templates_and_stats.sql 039_default_main_pool.sql 040_events_multi_account.sql 041_account_og_defaults.sql 041_event_custom_messages.sql 042_tracked_links_og.sql 043_events_og.sql 044_forms_og.sql 045_menus_auto_tag.sql"
+          IN_CLAUSE=""
+          for name in $LEGACY_MIGRATIONS; do
+            if [ -n "$IN_CLAUSE" ]; then IN_CLAUSE="${IN_CLAUSE},"; fi
+            IN_CLAUSE="${IN_CLAUSE}'${name}'"
+          done
+          D1EX --command "DELETE FROM _migrations WHERE name IN (${IN_CLAUSE})"
 
           # migrations は履歴的に `wrangler d1 execute --file` の手動運用も混在しており
           # _migrations 追跡テーブルの記録とDBの実状態がズレている場合がある。
