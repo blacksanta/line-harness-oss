@@ -119,6 +119,13 @@ publicGateRoutes.get('/public-gate/callback', async (c) => {
 
   const config = SITE_GATE_CONFIG[site];
   if (!config) return c.text('unknown site', 404);
+  // return は /authorize を経由しない state からも来うる（サイト側が直接
+  // access.line.me へ遷移するケース）ため、/authorize と独立にここでも検証する。
+  const safeReturn = safeRedirectTarget(returnTarget);
+  if (!safeReturn || !isReturnOriginAllowed(safeReturn, config.allowedReturnOrigins)) {
+    return c.text('invalid return target', 400);
+  }
+  returnTarget = safeReturn;
   if (error || !code) return c.html(gateMessagePage('ログインに失敗しました', 'もう一度お試しください。'), 400);
 
   const loginChannelId = c.env.LINE_LOGIN_CHANNEL_ID;
