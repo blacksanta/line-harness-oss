@@ -75,6 +75,22 @@ function isReturnOriginAllowed(target: string, allowedOrigins: string[]): boolea
 
 export const publicGateRoutes = new Hono<Env>();
 
+// GET /public-gate/site-config?site=<key> — 外部サイトが自身の中間ページを描画する
+// 前に叩く公開エンドポイント。管理画面で設定したヘッダー画像URLを返す。
+// タグ/戻り先オリジンはここでは返さない（クライアント側に見せる必要がないため）。
+publicGateRoutes.get('/public-gate/site-config', async (c) => {
+  const site = c.req.query('site') || '';
+  const config = await getPublicGateSiteBySiteKey(c.env.DB, site);
+  if (!config) return c.text('unknown site', 404);
+
+  const baseUrl = new URL(c.req.url).origin;
+  const headerImageUrl = config.header_image_r2_key
+    ? `${baseUrl}/api/public-gate-images/${config.header_image_r2_key}`
+    : null;
+
+  return c.json({ headerImageUrl });
+});
+
 publicGateRoutes.get('/public-gate/authorize', async (c) => {
   const site = c.req.query('site') || '';
   const config = await getPublicGateSiteBySiteKey(c.env.DB, site);
