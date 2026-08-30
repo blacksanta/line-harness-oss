@@ -190,6 +190,9 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     // R2 key 内に group_id / page_id (UUID) が含まれるので推測困難。draft 画像も
     // 最終的に LINE 上で公開されるため機密性は低い。
     path.startsWith('/api/rich-menu-images/') ||
+    // note-site等、この monorepo の外の静的サイトが <img src> で直接取得するため
+    // (Authorization ヘッダ不可)。public-gate-sites/ prefix 以外は route 側で404。
+    path.startsWith('/api/public-gate-images/') ||
     // LINE 上 rich menu 画像 proxy (Authorization ヘッダなしで <img src> 経由表示)
     path.match(/^\/api\/rich-menu-groups\/external\/[^/]+\/image$/) ||
     path.startsWith('/api/liff/') ||

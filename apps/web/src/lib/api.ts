@@ -1587,6 +1587,26 @@ export const api = {
       }),
     delete: (id: string) =>
       fetchApi<ApiResponse<null>>(`/api/public-gate-sites/${id}`, { method: 'DELETE' }),
+    // 画像 upload は Content-Type を image/* で送るので fetchApi を使わず直接 fetch。
+    uploadImage: async (id: string, file: File) => {
+      const csrf = getCsrfToken();
+      const res = await fetch(`${API_URL}/api/public-gate-sites/${id}/image`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': file.type,
+          ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
+        },
+        body: file,
+      });
+      const body = (await res.json()) as ApiResponse<PublicGateSite>;
+      if (!body.success) {
+        throw new Error(body.error ?? `upload failed: ${res.status}`);
+      }
+      return body;
+    },
+    imageUrl: (key: string) =>
+      `${API_URL}/api/public-gate-images/${encodeURIComponent(key)}`,
   },
   affiliateOffers: {
     list: (params?: { activeOnly?: boolean }) => {

@@ -447,6 +447,7 @@ export interface PublicGateSite {
   siteKey: string;
   requiredTagId: string;
   allowedReturnOrigins: string[];
+  headerImageR2Key: string | null;
   isActive: boolean;
   createdAt: string;
   updatedAt: string;

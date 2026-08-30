@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import Header from '@/components/layout/header'
 import type { PublicGateSite, Tag } from '@line-crm/shared'
@@ -90,6 +90,9 @@ function SiteCard({
   onChange: () => void
 }) {
   const requiredTag = tags.find((t) => t.id === site.requiredTagId)
+  const fileInput = useRef<HTMLInputElement>(null)
+  const [uploading, setUploading] = useState(false)
+  const [imageVersion, setImageVersion] = useState(0)
 
   const onToggleActive = async () => {
     const res = await api.publicGateSites.update(site.id, { isActive: !site.isActive })
@@ -103,6 +106,23 @@ function SiteCard({
     if (res.success) onChange()
     else alert(res.error ?? '削除に失敗しました')
   }
+
+  const onImageChange = async (file: File) => {
+    setUploading(true)
+    try {
+      await api.publicGateSites.uploadImage(site.id, file)
+      setImageVersion((v) => v + 1)
+      onChange()
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'アップロードに失敗しました')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const imageUrl = site.headerImageR2Key
+    ? `${api.publicGateSites.imageUrl(site.headerImageR2Key)}?v=${imageVersion}`
+    : null
 
   return (
     <div className="bg-white border border-gray-200 rounded p-4">
@@ -137,6 +157,38 @@ function SiteCard({
             削除
           </button>
         </div>
+      </div>
+
+      <div className="mt-3 pt-3 border-t border-gray-100">
+        <span className="text-xs font-medium text-gray-600">ヘッダー画像（LINEログイン中間ページ用）</span>
+        {imageUrl && (
+          <img
+            src={imageUrl}
+            alt=""
+            className="mt-2 max-h-32 rounded border border-gray-200"
+          />
+        )}
+        <input
+          ref={fileInput}
+          type="file"
+          accept="image/png,image/jpeg"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0]
+            if (file) onImageChange(file)
+            e.target.value = ''
+          }}
+        />
+        <div>
+          <button
+            onClick={() => fileInput.current?.click()}
+            disabled={uploading}
+            className="mt-2 px-3 py-1.5 text-xs font-medium border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+          >
+            {uploading ? 'アップロード中…' : site.headerImageR2Key ? '画像を差し替え' : '画像を選択'}
+          </button>
+        </div>
+        <p className="mt-1.5 text-[11px] text-gray-500">PNG / JPEG, 2MB以下</p>
       </div>
     </div>
   )

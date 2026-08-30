@@ -8,6 +8,7 @@ export interface PublicGateSite {
   site_key: string;
   required_tag_id: string;
   allowed_return_origins: string; // JSON配列文字列
+  header_image_r2_key: string | null;
   is_active: number;
   created_at: string;
   updated_at: string;
@@ -79,6 +80,7 @@ export async function createPublicGateSite(
 export interface UpdatePublicGateSiteInput {
   requiredTagId?: string;
   allowedReturnOrigins?: string[];
+  headerImageR2Key?: string | null;
   isActive?: boolean;
 }
 
@@ -97,6 +99,10 @@ export async function updatePublicGateSite(
   if (updates.allowedReturnOrigins !== undefined) {
     fields.push('allowed_return_origins = ?');
     values.push(JSON.stringify(updates.allowedReturnOrigins));
+  }
+  if (updates.headerImageR2Key !== undefined) {
+    fields.push('header_image_r2_key = ?');
+    values.push(updates.headerImageR2Key);
   }
   if (updates.isActive !== undefined) {
     fields.push('is_active = ?');
