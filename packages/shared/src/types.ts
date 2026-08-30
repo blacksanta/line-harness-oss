@@ -439,6 +439,20 @@ export interface PoolAccount {
 }
 
 // -----------------------------------------------------------------------------
+// Public Gate Site — /public-gate/* が参照する外部サイトのゲート設定
+// -----------------------------------------------------------------------------
+
+export interface PublicGateSite {
+  id: string;
+  siteKey: string;
+  requiredTagId: string;
+  allowedReturnOrigins: string[];
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// -----------------------------------------------------------------------------
 // Entry Route (リファラルリンク) — 流入経路 1 件
 // -----------------------------------------------------------------------------
 

@@ -32,6 +32,7 @@ import type {
   EntryRouteFunnel,
   TrafficPool,
   PoolAccount,
+  PublicGateSite,
 } from '@line-crm/shared'
 
 /** Affiliate offer (案件) as returned by the worker. */
@@ -1568,6 +1569,24 @@ export const api = {
           { method: 'DELETE' },
         ),
     },
+  },
+  publicGateSites: {
+    list: () => fetchApi<ApiResponse<PublicGateSite[]>>('/api/public-gate-sites'),
+    create: (data: { siteKey: string; requiredTagId: string; allowedReturnOrigins: string[] }) =>
+      fetchApi<ApiResponse<PublicGateSite>>('/api/public-gate-sites', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    update: (
+      id: string,
+      data: Partial<{ requiredTagId: string; allowedReturnOrigins: string[]; isActive: boolean }>,
+    ) =>
+      fetchApi<ApiResponse<PublicGateSite>>(`/api/public-gate-sites/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    delete: (id: string) =>
+      fetchApi<ApiResponse<null>>(`/api/public-gate-sites/${id}`, { method: 'DELETE' }),
   },
   affiliateOffers: {
     list: (params?: { activeOnly?: boolean }) => {
