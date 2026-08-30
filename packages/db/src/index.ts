@@ -29,6 +29,7 @@ export * from './traffic-pools';
 export * from './message-templates';
 export * from './rich-menus';
 export * from './lp-pages';
+export * from './public-gate-sites';
 export * from './affiliate-links';
 export * from './affiliate-offers';
 export * from './mileage';

@@ -7,23 +7,22 @@
 //   → code を交換し id_token を検証、友だち + 必須タグを確認して
 //     signGateToken を発行、return 先へ `?gate=<token>` を付けてリダイレクト
 //
-// 対象サイトは SITE_GATE_CONFIG に列挙する（DB マイグレーション不要）。
+// 対象サイトは public_gate_sites テーブルで管理する（管理画面 /public-gate-sites
+// から編集可能。071_public_gate_sites.sql）。
 // 友だちでない / タグを持たない場合は「認可失敗」の簡易ページを返す（return
 // 先へは進めない — フェイルクローズ）。
 
 import { Hono } from 'hono';
-import { getFriendByLineUserId, getFriendTags } from '@line-crm/db';
+import {
+  getFriendByLineUserId,
+  getFriendTags,
+  getPublicGateSiteBySiteKey,
+  parseAllowedReturnOrigins,
+} from '@line-crm/db';
 import { safeRedirectTarget } from '../lib/safe-redirect.js';
 import { signGateToken } from '../lib/gate-token.js';
 import { loginUnconfiguredPage } from '../lib/login-unconfigured.js';
 import type { Env } from '../index.js';
-
-const SITE_GATE_CONFIG: Record<string, { requiredTag: string; allowedReturnOrigins: string[] }> = {
-  'kr-note': {
-    requiredTag: 'note_purchased',
-    allowedReturnOrigins: ['https://kr-note-3887c3.pages.dev'],
-  },
-};
 
 function encodeState(state: string): string {
   return btoa(String.fromCharCode(...new TextEncoder().encode(state)));
@@ -78,12 +77,13 @@ export const publicGateRoutes = new Hono<Env>();
 
 publicGateRoutes.get('/public-gate/authorize', async (c) => {
   const site = c.req.query('site') || '';
-  const config = SITE_GATE_CONFIG[site];
+  const config = await getPublicGateSiteBySiteKey(c.env.DB, site);
   if (!config) return c.text('unknown site', 404);
+  const allowedReturnOrigins = parseAllowedReturnOrigins(config.allowed_return_origins);
 
   const rawReturn = c.req.query('return') || '';
   const safeReturn = safeRedirectTarget(rawReturn);
-  if (!safeReturn || !isReturnOriginAllowed(safeReturn, config.allowedReturnOrigins)) {
+  if (!safeReturn || !isReturnOriginAllowed(safeReturn, allowedReturnOrigins)) {
     return c.text('invalid return target', 400);
   }
 
@@ -117,12 +117,13 @@ publicGateRoutes.get('/public-gate/callback', async (c) => {
     // ignore
   }
 
-  const config = SITE_GATE_CONFIG[site];
+  const config = await getPublicGateSiteBySiteKey(c.env.DB, site);
   if (!config) return c.text('unknown site', 404);
+  const allowedReturnOrigins = parseAllowedReturnOrigins(config.allowed_return_origins);
   // return は /authorize を経由しない state からも来うる（サイト側が直接
   // access.line.me へ遷移するケース）ため、/authorize と独立にここでも検証する。
   const safeReturn = safeRedirectTarget(returnTarget);
-  if (!safeReturn || !isReturnOriginAllowed(safeReturn, config.allowedReturnOrigins)) {
+  if (!safeReturn || !isReturnOriginAllowed(safeReturn, allowedReturnOrigins)) {
     return c.text('invalid return target', 400);
   }
   returnTarget = safeReturn;
@@ -178,7 +179,7 @@ publicGateRoutes.get('/public-gate/callback', async (c) => {
   }
 
   const tags = await getFriendTags(c.env.DB, friend.id);
-  const hasRequiredTag = tags.some((t) => t.name === config.requiredTag);
+  const hasRequiredTag = tags.some((t) => t.id === config.required_tag_id);
   if (!hasRequiredTag) {
     return c.html(
       gateMessagePage(
