@@ -122,6 +122,15 @@ publicGateSites.post('/api/public-gate-sites/:id/image', async (c) => {
     await c.env.IMAGES.put(key, buf, { httpMetadata: { contentType } });
 
     const updated = await updatePublicGateSite(c.env.DB, id, { headerImageR2Key: key });
+
+    if (existing.header_image_r2_key && existing.header_image_r2_key !== key) {
+      try {
+        await c.env.IMAGES.delete(existing.header_image_r2_key);
+      } catch (err) {
+        console.error('failed to delete old header image:', err);
+      }
+    }
+
     return c.json({ success: true, data: serialize(updated!) });
   } catch (err) {
     console.error('POST /api/public-gate-sites/:id/image error:', err);
