@@ -50,6 +50,7 @@ import { inbox } from './routes/inbox.js';
 import { openapi } from './routes/openapi.js';
 import { liffRoutes } from './routes/liff.js';
 import { affiliateSelfRoutes } from './routes/affiliate-self.js';
+import { publicGateRoutes } from './routes/public-gate.js';
 // Round 3 ルート
 import { webhooks } from './routes/webhooks.js';
 import { calendar } from './routes/calendar.js';
@@ -127,6 +128,11 @@ export type Env = {
     // feature is entirely absent unless an operator opts in. ≥32 chars, shared
     // with the token issuer. See routes/admin-sso.ts and docs/ADMIN-AUTH.md.
     ADMIN_SSO_SECRET?: string;
+    // 外部サイト（Cloudflare Pages等）を LINE Login + タグ保有でゲートする
+    // /public-gate/* が発行する短命トークンの署名鍵。≥32文字。未設定なら
+    // /public-gate/callback は503を返す（fail closed）。routes/public-gate.ts
+    // 参照。
+    PUBLIC_GATE_SECRET?: string;
     X_HARNESS_URL?: string;  // Optional: X Harness API URL for account linking
     IG_HARNESS_URL?: string;  // Optional: IG Harness API URL for cross-platform linking
     IG_HARNESS_LINK_SECRET?: string;  // Shared secret for IG Harness link-line webhook
@@ -221,6 +227,7 @@ app.route('/', inbox);
 app.route('/', openapi);
 app.route('/', liffRoutes);
 app.route('/', affiliateSelfRoutes);
+app.route('/', publicGateRoutes);
 app.route('/', mediaInquiries);
 
 // Mount route groups — Round 3
