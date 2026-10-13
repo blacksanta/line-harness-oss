@@ -34,6 +34,32 @@ import type {
   PoolAccount,
   PublicGateSite,
 } from '@line-crm/shared'
+import { getApiBase } from './api-base'
+
+/** Per-account delivery-health snapshot for the dashboard cards. */
+export type AccountDeliveryHealth = {
+  lineAccountId: string
+  name: string
+  quota: {
+    type: string | null
+    limit: number | null
+    consumption: number | null
+    remaining: number | null
+  }
+  quotaAlert: boolean
+  insight: {
+    /** 'unready' = LINE がまだ前日分を集計していない状態（失敗とは別物） */
+    status: 'ready' | 'unready' | 'error'
+    date: string | null
+    followers: number | null
+    targetedReaches: number | null
+    blocks: number | null
+    followersDelta: number | null
+    blocksDelta: number | null
+  }
+  messagesThisMonth: number | null
+  errors: string[]
+}
 
 /** Affiliate offer (案件) as returned by the worker. */
 export type AffiliateOffer = {
@@ -86,12 +112,20 @@ export type BroadcastInsight = {
   fetchedAt?: string | null
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL
-if (!API_URL) {
-  throw new Error(
-    'NEXT_PUBLIC_API_URL is not set. Build cannot proceed without a valid API URL. ' +
-    'Set it in .env.production (local) or GitHub Secrets (CI).'
-  )
+// Resolved lazily on each call, not cached in a module-scope constant. This
+// module runs once in Node during the static export pass (where `window` is
+// undefined) and again in the browser; a module-scope `const` would freeze
+// whatever `getApiBase()` returned during that first (Node) pass — the
+// unresolved placeholder for a shared build — for the lifetime of the page.
+function apiUrl(): string {
+  const url = getApiBase()
+  if (!url) {
+    throw new Error(
+      'NEXT_PUBLIC_API_URL is not set. Cannot resolve the API base URL. ' +
+      'Set it in .env.production (local) or GitHub Secrets (CI).'
+    )
+  }
+  return url
 }
 
 /**
@@ -138,7 +172,7 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
     const token = getCsrfToken()
     if (token) csrfHeaders['X-CSRF-Token'] = token
   }
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await fetch(`${apiUrl()}${path}`, {
     ...options,
     // Send the HttpOnly session cookie with every request.
     credentials: 'include',
@@ -611,6 +645,10 @@ export const api = {
   lineAccounts: {
     list: () =>
       fetchApi<ApiResponse<LineAccount[]>>('/api/line-accounts'),
+    deliveryHealth: () =>
+      fetchApi<ApiResponse<{ insightDate: string; accounts: AccountDeliveryHealth[] }>>(
+        '/api/line-accounts/delivery-health',
+      ),
     get: (id: string) =>
       fetchApi<ApiResponse<LineAccount>>(`/api/line-accounts/${id}`),
     create: (data: {
@@ -1236,7 +1274,7 @@ export const api = {
         minWaitMinutes?: number;
         page?: number;
         pageSize?: number;
-      }) => {
+      }, request?: Pick<RequestInit, 'signal'>) => {
         const p = new URLSearchParams();
         if (opts?.q) p.set('q', opts.q);
         if (opts?.account) p.set('account', opts.account);
@@ -1260,14 +1298,14 @@ export const api = {
             lastIncomingType: string;
             lastIncomingContent: string;
           }>;
-        }>>(`/api/inbox/unanswered${qs ? `?${qs}` : ''}`);
+        }>>(`/api/inbox/unanswered${qs ? `?${qs}` : ''}`, request);
       },
-      count: () =>
+      count: (request?: Pick<RequestInit, 'signal'>) =>
         fetchApi<ApiResponse<{
           total: number;
           byAccount: Array<{ accountId: string; accountName: string; count: number }>;
           oldestWaitMinutes: number | null;
-        }>>('/api/inbox/unanswered/count'),
+        }>>('/api/inbox/unanswered/count', request),
     },
   },
   richMenuGroups: {
@@ -1427,7 +1465,7 @@ export const api = {
     // クッキーや Authorization が必要 — 代わりに admin が cache-busting できる
     // タイムスタンプを付けるパターンで利用)。
     externalImageUrl: (richMenuId: string, accountId: string) =>
-      `${API_URL}/api/rich-menu-groups/external/${richMenuId}/image?accountId=${encodeURIComponent(accountId)}`,
+      `${apiUrl()}/api/rich-menu-groups/external/${richMenuId}/image?accountId=${encodeURIComponent(accountId)}`,
 
     applyToTag: (
       groupId: string,
@@ -1446,7 +1484,7 @@ export const api = {
     uploadImage: async (groupId: string, pageId: string, file: File) => {
       const csrf = getCsrfToken();
       const res = await fetch(
-        `${API_URL}/api/rich-menu-groups/${groupId}/pages/${pageId}/image`,
+        `${apiUrl()}/api/rich-menu-groups/${groupId}/pages/${pageId}/image`,
         {
           method: 'POST',
           credentials: 'include',
@@ -1474,7 +1512,7 @@ export const api = {
     //   v1 ではドラフト編集中のプレビュー用 = 認証バイパスでも実害は低いので、
     //   後続 PR で worker 側を whitelist 化する想定。
     imageUrl: (key: string) =>
-      `${API_URL}/api/rich-menu-images/${encodeURIComponent(key)}`,
+      `${apiUrl()}/api/rich-menu-images/${encodeURIComponent(key)}`,
   },
   messageTemplates: {
     list: () =>
@@ -1590,7 +1628,7 @@ export const api = {
     // 画像 upload は Content-Type を image/* で送るので fetchApi を使わず直接 fetch。
     uploadImage: async (id: string, file: File) => {
       const csrf = getCsrfToken();
-      const res = await fetch(`${API_URL}/api/public-gate-sites/${id}/image`, {
+      const res = await fetch(`${apiUrl()}/api/public-gate-sites/${id}/image`, {
         method: 'POST',
         credentials: 'include',
         headers: {
@@ -1606,7 +1644,7 @@ export const api = {
       return body;
     },
     imageUrl: (key: string) =>
-      `${API_URL}/api/public-gate-images/${encodeURIComponent(key)}`,
+      `${apiUrl()}/api/public-gate-images/${encodeURIComponent(key)}`,
   },
   affiliateOffers: {
     list: (params?: { activeOnly?: boolean }) => {
@@ -1969,7 +2007,7 @@ export const bookingApi = {
     fetchApi<{
       connection: BookingGoogleCalendarConnection | null;
       service_account: { configured: boolean; email: string | null };
-      oauth: { configured: boolean };
+      oauth: { configured: boolean; managed?: boolean };
     }>(withAccount(`/api/booking/admin/staff/${staffId}/google-calendar`, accountId)),
   startGoogleCalendarOAuth: (accountId: string, staffId: string) =>
     fetchApi<{ authorization_url: string }>(
