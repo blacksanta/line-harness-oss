@@ -2,6 +2,7 @@ import type { Context, Next } from 'hono';
 import { getStaffByApiKey } from '@line-crm/db';
 import type { Env } from '../index.js';
 import type { AdminSameSite } from './admin-auth-config.js';
+import { safeDecode } from '../utils/safe-decode.js';
 
 export const ADMIN_AUTH_COOKIE = 'lh_admin_session';
 export const CSRF_COOKIE = 'lh_csrf';
@@ -11,19 +12,6 @@ export const CSRF_HEADER = 'x-csrf-token';
 const SESSION_MAX_AGE = 604800;
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
-
-/**
- * decodeURIComponent throws on malformed percent escapes (e.g. `%`). Cookie
- * headers are client-controlled, so fall back to the raw value rather than
- * letting the exception turn a request into a 500.
- */
-function safeDecode(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
 
 function parseCookieHeader(cookieHeader: string | undefined): Record<string, string> {
   if (!cookieHeader) return {};
@@ -190,6 +178,9 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     // R2 key 内に group_id / page_id (UUID) が含まれるので推測困難。draft 画像も
     // 最終的に LINE 上で公開されるため機密性は低い。
     path.startsWith('/api/rich-menu-images/') ||
+    // note-site等、この monorepo の外の静的サイトが <img src> で直接取得するため
+    // (Authorization ヘッダ不可)。public-gate-sites/ prefix 以外は route 側で404。
+    path.startsWith('/api/public-gate-images/') ||
     // LINE 上 rich menu 画像 proxy (Authorization ヘッダなしで <img src> 経由表示)
     path.match(/^\/api\/rich-menu-groups\/external\/[^/]+\/image$/) ||
     path.startsWith('/api/liff/') ||

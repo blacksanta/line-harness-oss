@@ -127,22 +127,47 @@ export async function getDueReminderDeliveries(db: D1Database, now: string): Pro
               INNER JOIN reminders r ON r.id = fr.reminder_id
               WHERE fr.status = 'active' AND r.is_active = 1`)
     .all<FriendReminderRow>();
+  if (activeReminders.results.length === 0) return [];
 
+  // 登録ごとに steps / 配信済みを引く N+1 を避け、2クエリでまとめて取得する
+  // (毎分の cron で走るため、件数に比例するクエリ数と CPU 時間を抑える)。
+  const [allSteps, allDelivered] = await Promise.all([
+    db.prepare(`SELECT rs.* FROM reminder_steps rs
+                INNER JOIN reminders r ON r.id = rs.reminder_id
+                WHERE r.is_active = 1
+                ORDER BY rs.offset_minutes ASC`)
+      .all<ReminderStepRow>(),
+    db.prepare(`SELECT frd.friend_reminder_id, frd.reminder_step_id
+                FROM friend_reminder_deliveries frd
+                INNER JOIN friend_reminders fr ON fr.id = frd.friend_reminder_id
+                WHERE fr.status = 'active'`)
+      .all<{ friend_reminder_id: string; reminder_step_id: string }>(),
+  ]);
+
+  const stepsByReminder = new Map<string, ReminderStepRow[]>();
+  for (const step of allSteps.results) {
+    const list = stepsByReminder.get(step.reminder_id);
+    if (list) list.push(step);
+    else stepsByReminder.set(step.reminder_id, [step]);
+  }
+  const deliveredByFriendReminder = new Map<string, Set<string>>();
+  for (const d of allDelivered.results) {
+    const set = deliveredByFriendReminder.get(d.friend_reminder_id);
+    if (set) set.add(d.reminder_step_id);
+    else deliveredByFriendReminder.set(d.friend_reminder_id, new Set([d.reminder_step_id]));
+  }
+
+  const nowMs = new Date(now).getTime();
   const results: Array<FriendReminderRow & { steps: ReminderStepRow[] }> = [];
   for (const fr of activeReminders.results) {
-    const steps = await getReminderSteps(db, fr.reminder_id);
-    // 配信済みステップを取得
-    const delivered = await db
-      .prepare(`SELECT reminder_step_id FROM friend_reminder_deliveries WHERE friend_reminder_id = ?`)
-      .bind(fr.id)
-      .all<{ reminder_step_id: string }>();
-    const deliveredIds = new Set(delivered.results.map((d) => d.reminder_step_id));
+    const steps = stepsByReminder.get(fr.reminder_id) ?? [];
+    const deliveredIds = deliveredByFriendReminder.get(fr.id);
+    const targetMs = new Date(fr.target_date).getTime();
 
     // 未配信で配信時刻が到来しているステップをフィルタ
     const dueSteps = steps.filter((step) => {
-      if (deliveredIds.has(step.id)) return false;
-      const targetTime = new Date(fr.target_date).getTime() + step.offset_minutes * 60_000;
-      return targetTime <= new Date(now).getTime();
+      if (deliveredIds?.has(step.id)) return false;
+      return targetMs + step.offset_minutes * 60_000 <= nowMs;
     });
 
     if (dueSteps.length > 0) {

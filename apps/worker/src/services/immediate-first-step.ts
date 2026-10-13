@@ -1,3 +1,4 @@
+import { buildMessages, messagesToLogPayload } from './message-group.js';
 import {
   getScenarioById,
   getFriendById,
@@ -9,6 +10,7 @@ import {
   enrollFriendInScenario,
   getLineAccountByChannelId,
   getLineAccountById,
+  resolveDefaultLineAccount,
   addTagToFriend,
   jstNow,
   toJstString,
@@ -316,12 +318,27 @@ export async function pushImmediateFirstStep(
       resolveStepContent(db, firstStep),
       ctx.accountChannelId ? getLineAccountByChannelId(db, ctx.accountChannelId) : null,
     ]);
+    // 送信に使うアカウントを、変数展開・装飾より前に1回だけ決める。
+    // friend 自身 → 呼び出し側が指定したチャネル → テナントに1本しか無ければその行。
+    // ここで ID を取りこぼすと「正しいチャネルから送られたのに LIFF リンクだけ
+    // 持ち主不明」になり、その友だちがグローバルの LIFF 同意画面へ飛ぶ
+    // （Codex review round 1 の指摘）。トークンと装飾で同じ行を使うのが要点。
+    const friendOwnAccount = friend.line_account_id
+      ? await getLineAccountById(db, friend.line_account_id)
+      : null;
+    const sendAccount =
+      (ctx.accountChannelId ? ctxAccount : friendOwnAccount ?? ctxAccount) ??
+      (await resolveDefaultLineAccount(db));
+
     const expanded = expandVariables(
       resolved.messageContent,
       { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1],
       ctx.workerUrl,
       resolved.messageType,
+      // {{form_url:ID}} は送信アカウントの liffId で組み立てる（装飾と同じ行を使う）。
+      sendAccount?.liff_id ?? null,
     );
+
     // Same decoration pipeline as the cron (processStepDeliveries) via the
     // shared helper. Link owner: the friend's own account, else the
     // caller-resolved channel — LIFF/OAuth entry points run BEFORE the follow
@@ -332,13 +349,13 @@ export async function pushImmediateFirstStep(
       resolved.messageType,
       expanded,
       ctx.workerUrl,
-      { lineAccountId: friend.line_account_id ?? ctxAccount?.id ?? null, friendId },
+      { lineAccountId: friend.line_account_id ?? sendAccount?.id ?? null, friendId },
     );
-    const sentMessage = buildMessage(decorated.messageType, decorated.content);
+    const sentMessages = buildMessages(decorated.messageType, decorated.content, buildMessage);
 
     try {
       if (options?.reply) {
-        await options.reply.client.replyMessage(options.reply.replyToken, [sentMessage]);
+        await options.reply.client.replyMessage(options.reply.replyToken, sentMessages);
       } else {
         const pushTarget = options?.targetLineUserId ?? friend.line_user_id;
         if (!pushTarget) {
@@ -346,16 +363,11 @@ export async function pushImmediateFirstStep(
           await releaseClaim();
           return false;
         }
-        // Token: caller-supplied account channel → friend's own account → env default.
-        let accessToken = ctx.defaultAccessToken;
-        if (ctx.accountChannelId) {
-          if (ctxAccount?.channel_access_token) accessToken = ctxAccount.channel_access_token;
-        } else if (friend.line_account_id) {
-          const acct = await getLineAccountById(db, friend.line_account_id);
-          if (acct?.channel_access_token) accessToken = acct.channel_access_token;
-        }
+        // 上で決めた sendAccount のトークンを使う（装飾と同じ行）。
+        // どのアカウントにも解決できなければ env が最後の砦。
+        const accessToken = sendAccount?.channel_access_token || ctx.defaultAccessToken;
         const lineClient = new LineClient(accessToken);
-        await lineClient.pushMessage(pushTarget, [sentMessage]);
+        await lineClient.pushMessage(pushTarget, sentMessages);
       }
     } catch (err) {
       // The message never left LINE's API — release so the cron retries on
@@ -376,7 +388,7 @@ export async function pushImmediateFirstStep(
     // Log what was actually delivered (post buildMessage normalization) so
     // the cooldown above sees it on subsequent calls and the dashboard chat
     // view mirrors LINE 1:1. delivery_type mirrors the send channel.
-    const logPayload = messageToLogPayload(sentMessage);
+    const logPayload = messagesToLogPayload(sentMessages, messageToLogPayload);
     await db
       .prepare(
         `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, source, template_id_at_send, created_at)
