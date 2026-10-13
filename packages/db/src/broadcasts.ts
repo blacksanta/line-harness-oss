@@ -59,6 +59,24 @@ LEFT JOIN broadcast_insights bi ON b.id = bi.broadcast_id
   return result.results;
 }
 
+/**
+ * cron の予約配信処理用: status='scheduled' の行だけを取得する。
+ * getBroadcasts は全配信を insight JOIN 付きで読むため、毎分の cron で使うと
+ * 配信履歴の件数に比例して Worker の CPU 時間 (行のデシリアライズ) が伸びる。
+ * scheduled_at は Z / +09:00 の書式が混在し得るので、時刻比較は呼び出し側 (JS) に残す。
+ * 並び順は getBroadcasts と揃える。
+ */
+export async function getScheduledBroadcasts(db: D1Database): Promise<Broadcast[]> {
+  const result = await db
+    .prepare(
+      `SELECT * FROM broadcasts
+       WHERE status = 'scheduled' AND scheduled_at IS NOT NULL
+       ORDER BY COALESCE(sent_at, scheduled_at, created_at) DESC`,
+    )
+    .all<Broadcast>();
+  return result.results;
+}
+
 export async function getBroadcastById(
   db: D1Database,
   id: string,

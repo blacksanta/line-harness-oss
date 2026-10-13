@@ -4,7 +4,7 @@ import { BroadcastSenderError, resolveBroadcastSender } from './broadcast-sender
 import { extractFlexAltText } from '../utils/flex-alt-text.js';
 import {
   getBroadcastById,
-  getBroadcasts,
+  getScheduledBroadcasts,
   getQueuedBroadcasts,
   updateBroadcastStatus,
   updateBroadcastBatchProgress,
@@ -465,7 +465,7 @@ export async function processScheduledBroadcasts(
   workerUrl?: string,
   quotaEnv?: QuotaEnv,
 ): Promise<void> {
-  const allBroadcasts = await getBroadcasts(db);
+  const allBroadcasts = await getScheduledBroadcasts(db);
 
   const nowMs = Date.now();
   const scheduled = allBroadcasts.filter(

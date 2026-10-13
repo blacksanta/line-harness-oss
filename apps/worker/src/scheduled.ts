@@ -99,7 +99,7 @@ export async function scheduled(
   // token refresh はリマインドより先に済ませる (失効直後トークンでの 401 送信を防ぐ。
   // 旧順序では refresh が先だった invariant の維持)。
   try {
-    await refreshLineAccessTokens(env.DB);
+    await refreshLineAccessTokens(env.DB, dbAccounts);
   } catch (e) {
     console.error('token refresh error:', e);
   }
@@ -215,7 +215,10 @@ export async function scheduled(
     // クォータ残量は月次粒度の信号なので毎時 tick だけ確認する (checkQuota)。
     // 5分毎に全アカウント分の quota API を叩くと bot/info を分足→5分に
     // 落とした経緯 (上のコメント参照) と同じ過剰負荷になる。
-    jobs.push(checkAccountHealth(env.DB, { checkQuota: isHourlyTick(event) }));
+    jobs.push(checkAccountHealth(env.DB, {
+      checkQuota: isHourlyTick(event),
+      accounts: dbAccounts,
+    }));
     jobs.push(
       processPendingMileageEvents(env.DB, { limit: 100 }).then((result) => {
         if (result.claimed > 0) {

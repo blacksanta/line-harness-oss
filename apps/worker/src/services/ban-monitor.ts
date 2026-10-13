@@ -18,6 +18,7 @@ import {
   createAccountHealthLog,
   getAccountHealthLogs,
 } from '@line-crm/db';
+import type { LineAccount } from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
 import {
   countDeliverableAudience,
@@ -27,9 +28,10 @@ import {
 
 export async function checkAccountHealth(
   db: D1Database,
-  opts: { checkQuota?: boolean } = {},
+  // accounts: cron の tick 内で取得済みの一覧 (省略時は D1 から読む)
+  opts: { checkQuota?: boolean; accounts?: LineAccount[] } = {},
 ): Promise<void> {
-  const accounts = await getLineAccounts(db);
+  const accounts = opts.accounts ?? (await getLineAccounts(db));
   const activeAccounts = accounts.filter((a) => a.is_active);
   // legacy な line_account_id NULL 行は単一アカウント運用でのみ audience に含める
   // (マルチアカウントで全アカウントに加算すると共有 NULL プール分が水増しされ、
