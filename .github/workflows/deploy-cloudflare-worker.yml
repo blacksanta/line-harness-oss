@@ -50,27 +50,12 @@ jobs:
           D1EX --command \
             "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
 
-          # 1回限りの補正: 2026-08-23 の初回実行で「2026-08-23より前 (001〜045) は
-          # 反映済み」と一括シードしたが、本番では033・035など複数件が実際は
-          # 未反映だった (手動運用の抜け漏れ)。52件分の誤記録をまとめて消し、
-          # 下の自己修復ループで全件を実際に再検証させる。
-          # 再検証が最後まで成功したら目印の行を記録し、以後の実行では DELETE を
-          # 飛ばす (毎回 001〜045 をリモート D1 に流し直すと、API 呼び出しが増えて
-          # 7009 等の一時エラーでデプロイが落ちやすくなるため)。
-          LEGACY_MARKER="__legacy_reverify_20260823"
-          LEGACY_MIGRATIONS="001_round2.sql 002_round3.sql 003_entry_routes.sql 004_friend_metadata.sql 005_step_branching.sql 006_tracked_links.sql 007_forms.sql 008_multi_account.sql 009_delivery_type.sql 009_token_expiry.sql 010_ad_conversions.sql 011_staff_members.sql 012_alt_text.sql 013_broadcast_insights.sql 014_form_submit_message.sql 015_auto_reply_account.sql 016_traffic_pools.sql 017_form_webhook.sql 018_broadcast_queue.sql 018_message_templates.sql 019_pool_accounts.sql 020_tracked_link_intro.sql 021_tracked_link_reward.sql 022_friend_first_tracked_link.sql 023_friend_ig_igsid.sql 024_form_opens.sql 025_account_settings.sql 026_delivery_type_test.sql 027_dedup_delivery.sql 028_messages_log_source.sql 029_account_management_v2.sql 029_lp_pages.sql 030_dedup_progress.sql 030_lp_pages_blocks.sql 031_batch_lock_at.sql 032_messages_log_line_account_id.sql 033_auto_replies_template_id.sql 034_webhook_secret_required.sql 035_rich_menu_groups.sql 036_booking.sql 037_event_booking.sql 037_scenario_delivery_mode.sql 038_entry_routes_pool_and_push.sql 038_scenario_templates_and_stats.sql 039_default_main_pool.sql 040_events_multi_account.sql 041_account_og_defaults.sql 041_event_custom_messages.sql 042_tracked_links_og.sql 043_events_og.sql 044_forms_og.sql 045_menus_auto_tag.sql"
-          IN_CLAUSE=""
-          for name in $LEGACY_MIGRATIONS; do
-            if [ -n "$IN_CLAUSE" ]; then IN_CLAUSE="${IN_CLAUSE},"; fi
-            IN_CLAUSE="${IN_CLAUSE}'${name}'"
-          done
-          legacy_done=$(D1EX --command "SELECT name FROM _migrations WHERE name = '${LEGACY_MARKER}'" --json \
-            | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));console.log(d[0]?.results?.length||0)")
-          if [ "$legacy_done" = "0" ]; then
-            D1EX --command "DELETE FROM _migrations WHERE name IN (${IN_CLAUSE})"
-          else
-            echo "Legacy re-verification already done; skipping reset."
-          fi
+          # 注: 2026-08-23 に「001〜045 の誤記録を消して全件を再検証する」1回限りの
+          # 補正を入れたが、DELETE が毎回実行され、デプロイのたびに53件をリモート D1 に
+          # 流し直していた。staging (2026-08-23) / 本番 (2026-08-30 以降) とも再検証は
+          # 完了済みなので補正は削除した。DB が大きくなった staging では、反映済みの
+          # 002_round3.sql の import が 7009 (Upstream service unavailable) で
+          # 毎回失敗するようになっていた (2026-10-13, 10-14)。
 
           # migrations は履歴的に `wrangler d1 execute --file` の手動運用も混在しており
           # _migrations 追跡テーブルの記録とDBの実状態がズレている場合がある。
@@ -116,9 +101,6 @@ jobs:
             D1EX --command \
               "INSERT INTO _migrations (name, applied_at) VALUES ('${name}', datetime('now'))"
           done
-
-          D1EX --command \
-            "INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES ('${LEGACY_MARKER}', datetime('now'))"
 
       - name: Build Worker and LIFF assets
         run: pnpm --filter worker build
