@@ -1,3 +1,5 @@
+import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
+import { calendarCredentialsFromEnv, calendarBrokerAvailable, calendarBrokerRequest, isBrokerRefreshToken } from '../services/google-calendar-broker.js';
 // Booking feature HTTP routes.
 //
 // LIFF-facing endpoints live under /api/liff/booking/* (auth-bypassed by
@@ -39,6 +41,7 @@ import {
   buildGoogleOAuthAuthorizationUrl,
   exchangeGoogleOAuthCode,
   googleOAuthConfigured,
+  directGoogleOAuthConfigured,
   revokeGoogleOAuthToken,
   signGoogleOAuthState,
   verifyGoogleOAuthState,
@@ -48,29 +51,56 @@ const booking = new Hono<Env>();
 const GOOGLE_OAUTH_CALLBACK_PATH = '/api/booking/google-calendar/oauth/callback';
 const GOOGLE_OAUTH_STATE_TTL_MS = 10 * 60_000;
 
-function googleCredentials(env: Env['Bindings']) {
-  return {
-    email: env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-    privateKey: env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY,
-    oauthClientId: env.GOOGLE_OAUTH_CLIENT_ID,
-    oauthClientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET,
-  };
-}
+const googleCredentials = calendarCredentialsFromEnv;
+const GOOGLE_BROKER_COOKIE = '__Host-google-calendar-state';
 
 function googleOAuthRedirectUri(requestUrl: string): string {
   return new URL(GOOGLE_OAUTH_CALLBACK_PATH, requestUrl).toString();
 }
 
-function adminCalendarReturnUrl(
+/**
+ * `adminOrigin` comes from the browser's `Origin` request header when the
+ * admin UI kicked off the OAuth flow (see the `signGoogleOAuthState` call
+ * site below) — an Origin header is, by HTTP spec, always scheme+host only,
+ * never a path. `env.ADMIN_PUBLIC_URL` is the opposite: since the
+ * three-surfaces bundle (2026-08-24) it carries the admin's basePath (e.g.
+ * `https://tenant.example/console`) for single-origin installs where admin now lives
+ * on a subpath of the same origin the Worker itself serves.
+ *
+ * Exported for direct unit testing (codex review round 2: `new URL(path,
+ * base)` REPLACES `base`'s pathname entirely for a path-absolute `path` —
+ * building this the naive way silently dropped ADMIN_PUBLIC_URL's own path,
+ * sending a single-origin install's Google Calendar connect flow back to the
+ * root — the LIFF app, not admin — instead of the settings page it started
+ * from).
+ */
+export function adminCalendarReturnUrl(
   env: Env['Bindings'],
   staffId: string | null,
   result: 'connected' | 'denied' | 'error',
   adminOrigin?: string,
 ): string {
-  const url = new URL(
-    '/booking/staff/shifts',
-    adminOrigin ?? env.ADMIN_PUBLIC_URL ?? 'https://your-admin.pages.dev',
-  );
+  const adminPublicUrl = (() => {
+    try {
+      return env.ADMIN_PUBLIC_URL ? new URL(env.ADMIN_PUBLIC_URL) : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  // Prefer ADMIN_PUBLIC_URL (it carries the basePath) whenever it's on the
+  // same origin as the captured Origin header — true for every single-origin install,
+  // where both ultimately name the same consolidated origin. Different
+  // origin (legacy separate-Pages admin) or no ADMIN_PUBLIC_URL at all →
+  // fall back to adminOrigin, then ADMIN_PUBLIC_URL, then the historical
+  // hardcoded default — same fallback order as before, just base-selection,
+  // not URL construction.
+  const base =
+    adminOrigin && adminPublicUrl && adminOrigin === adminPublicUrl.origin
+      ? env.ADMIN_PUBLIC_URL!
+      : (adminOrigin ?? env.ADMIN_PUBLIC_URL ?? 'https://your-admin.pages.dev');
+  const baseUrl = new URL(base);
+  const basePath = baseUrl.pathname === '/' ? '' : baseUrl.pathname.replace(/\/+$/, '');
+  const url = new URL(`${basePath}/booking/staff/shifts`, baseUrl.origin);
   if (staffId) url.searchParams.set('staff_id', staffId);
   url.searchParams.set('google', result);
   return url.toString();
@@ -1180,7 +1210,14 @@ booking.post('/api/booking/admin/staff/:id/google-calendar/oauth/start', async (
   if (!googleOAuthConfigured(credentials)) {
     return c.json({ error: 'google_oauth_not_configured' }, 503);
   }
+  const broker = !directGoogleOAuthConfigured(credentials);
+  if (broker && !await calendarBrokerAvailable(credentials)) {
+    return c.json({ error: 'google_calendar_temporarily_unavailable' }, 503);
+  }
+  const browserNonce = broker ? crypto.randomUUID() : undefined;
   const state = await signGoogleOAuthState({
+    broker,
+    browserNonce,
     accountId,
     staffId,
     expiresAt: Date.now() + GOOGLE_OAUTH_STATE_TTL_MS,
@@ -1189,6 +1226,11 @@ booking.post('/api/booking/admin/staff/:id/google-calendar/oauth/start', async (
       return resolveCorsOrigin(c.env, origin, c.req.url) === origin ? origin : undefined;
     })(),
   }, c.env.API_KEY);
+  if (broker) {
+    const result = await calendarBrokerRequest<{ authorization_url: string }>(credentials, 'start', { state });
+    setCookie(c, GOOGLE_BROKER_COOKIE, browserNonce!, { httpOnly: true, secure: true, sameSite: 'Lax', path: '/', maxAge: 600 });
+    return c.json(result);
+  }
   const authorizationUrl = buildGoogleOAuthAuthorizationUrl({
     clientId: credentials.oauthClientId!,
     redirectUri: googleOAuthRedirectUri(c.req.url),
@@ -1200,12 +1242,20 @@ booking.post('/api/booking/admin/staff/:id/google-calendar/oauth/start', async (
 // Google redirects here without an admin Authorization header. authMiddleware has a narrow
 // GET-only exception for this exact path; signed state binds the callback to staff/account.
 booking.get(GOOGLE_OAUTH_CALLBACK_PATH, async (c) => {
+  c.header('Cache-Control', 'no-store');
+  c.header('Referrer-Policy', 'no-referrer');
   let staffId: string | null = null;
   let adminOrigin: string | undefined;
   try {
     const state = c.req.query('state');
     if (!state) throw new Error('google_oauth_state_missing');
     const payload = await verifyGoogleOAuthState(state, c.env.API_KEY);
+    if (payload.broker) {
+      if (!payload.browserNonce || getCookie(c, GOOGLE_BROKER_COOKIE) !== payload.browserNonce) {
+        throw new Error('google_oauth_browser_mismatch');
+      }
+      deleteCookie(c, GOOGLE_BROKER_COOKIE, { path: '/', secure: true });
+    }
     staffId = payload.staffId;
     adminOrigin = payload.adminOrigin;
     if (c.req.query('error')) {
@@ -1213,18 +1263,25 @@ booking.get(GOOGLE_OAUTH_CALLBACK_PATH, async (c) => {
     }
     const code = c.req.query('code');
     const credentials = googleCredentials(c.env);
-    if (!code || !googleOAuthConfigured(credentials)) {
+    const ticket = c.req.query('broker_ticket');
+    if (!(payload.broker ? ticket : code) || !googleOAuthConfigured(credentials)) {
       throw new Error('google_oauth_callback_invalid');
     }
     if (!(await assertStaffInAccount(c.env.DB, payload.staffId, payload.accountId))) {
       throw new Error('google_oauth_staff_invalid');
     }
-    const token = await exchangeGoogleOAuthCode({
-      code,
+    const token = payload.broker
+      ? await calendarBrokerRequest<{ accessToken: string; refreshToken: string; expiresIn: number; state: string }>(credentials, 'token', { action: 'redeem', ticket: ticket! })
+      : await exchangeGoogleOAuthCode({
+      code: code!,
       clientId: credentials.oauthClientId!,
       clientSecret: credentials.oauthClientSecret!,
       redirectUri: googleOAuthRedirectUri(c.req.url),
     });
+
+    if (payload.broker && (!('state' in token) || token.state !== state || !isBrokerRefreshToken(token.refreshToken))) {
+      throw new Error('google_oauth_handoff_mismatch');
+    }
 
     // Verify the granted account immediately before persisting the long-lived token.
     const client = new GoogleCalendarClient({ calendarId: 'primary', accessToken: token.accessToken });
@@ -1310,7 +1367,8 @@ booking.get('/api/booking/admin/staff/:id/google-calendar', async (c) => {
       email: c.env.GOOGLE_SERVICE_ACCOUNT_EMAIL ?? null,
     },
     oauth: {
-      configured: googleOAuthConfigured(googleCredentials(c.env)),
+      configured: directGoogleOAuthConfigured(googleCredentials(c.env)) || await calendarBrokerAvailable(googleCredentials(c.env)),
+      managed: Boolean(c.env.GOOGLE_CALENDAR_TENANT_ID),
     },
   });
 });
@@ -1398,8 +1456,16 @@ booking.delete('/api/booking/admin/staff/:id/google-calendar', async (c) => {
   if (connection?.auth_type === 'oauth') {
     const token = connection.refresh_token ?? connection.access_token;
     if (token) {
-      await revokeGoogleOAuthToken(token).catch((error) =>
-        console.error('Google OAuth revoke failed during disconnect:', error));
+      try {
+        if (isBrokerRefreshToken(token)) {
+          await calendarBrokerRequest(googleCredentials(c.env), 'token', { action: 'revoke', refreshToken: token });
+        } else {
+          await revokeGoogleOAuthToken(token);
+        }
+      } catch {
+        // Keep the credential so a failed revocation can be retried.
+        return c.json({ error: 'google_calendar_disconnect_failed' }, 502);
+      }
     }
   }
   await c.env.DB

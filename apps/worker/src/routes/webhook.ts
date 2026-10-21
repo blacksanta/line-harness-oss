@@ -185,6 +185,12 @@ webhook.post('/webhook', async (c) => {
 
   c.executionCtx.waitUntil(processingPromise);
 
+  // fork: 本家はここで定期ジョブ用 DO (TenantScheduler) の alarm を arm するが、
+  // fork は Cron Trigger だけで定期ジョブを回す。DO を arm すると cron と合わせて
+  // scheduled() が毎分2回走り、D1 / LINE API の負荷が倍になるうえ、DO も Worker と
+  // 同じ CPU 上限なので CPU 超過対策にもならないため呼ばない。
+  // 戻すときは `c.executionCtx.waitUntil(ensureSchedulerArmed(c.env));` を復活させる。
+
   return c.json({ status: 'ok' }, 200);
 });
 
@@ -395,6 +401,7 @@ async function handleEvent(
     // silent + automation で「返信なしでタグだけ付ける」構成もここで成立する。
     const { matched: postbackMatched, replyTokenConsumed: postbackReplyTokenConsumed } =
       await matchAndReply(db, lineClient, friend, postbackData, event.replyToken, {
+        inputKind: 'postback',
         lineAccountId,
         workerUrl,
         liffUrl,
@@ -596,6 +603,7 @@ async function handleEvent(
       incomingText,
       event.replyToken,
       {
+        inputKind: 'text',
         lineAccountId,
         workerUrl,
         liffUrl,

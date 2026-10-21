@@ -455,9 +455,14 @@ export async function getFriendScenariosDueForDelivery(
     )
     .all<FriendScenario>();
   const nowMs = new Date(now).getTime();
-  return result.results
-    .filter((fs) => new Date(fs.next_delivery_at!).getTime() <= nowMs)
-    .sort((a, b) => new Date(a.next_delivery_at!).getTime() - new Date(b.next_delivery_at!).getTime());
+  // 毎分の cron で全 active 行を処理するため、日付パースは1行1回に抑える
+  // (sort の比較関数内でパースすると O(n log n) 回になり CPU 時間を食う)。
+  const due: Array<{ row: FriendScenario; at: number }> = [];
+  for (const fs of result.results) {
+    const at = new Date(fs.next_delivery_at!).getTime();
+    if (at <= nowMs) due.push({ row: fs, at });
+  }
+  return due.sort((a, b) => a.at - b.at).map((d) => d.row);
 }
 
 /**

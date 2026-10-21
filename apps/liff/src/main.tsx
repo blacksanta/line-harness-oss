@@ -33,8 +33,15 @@ function rewritePageQuery(): void {
 
   if (!newPath) return; // 未知の page 値は触らない（前方互換）
   const qs = next.toString();
-  window.history.replaceState(null, '', qs ? `${newPath}?${qs}` : newPath);
+  const fullPath = `${basename}${newPath}`;
+  window.history.replaceState(null, '', qs ? `${fullPath}?${qs}` : fullPath);
 }
+// three-surfaces bundle（2026-08-24）: このアプリが `/liff-app` のようなサブパスで
+// 配信されるとき、クライアント側ルーティングもそのプレフィックス配下で動く必要がある。
+// `import.meta.env.BASE_URL`（vite が vite.config.ts の `base` から自動で埋める。
+// 末尾 '/' 付き）を react-router の basename に渡す — root 配信（'/'）のときは
+// basename='' になり、これまでどおり動く。
+const basename = import.meta.env.BASE_URL.replace(/\/+$/, '');
 
 (async () => {
   try {
@@ -42,7 +49,7 @@ function rewritePageQuery(): void {
     rewritePageQuery();
     createRoot(document.getElementById('root')!).render(
       <StrictMode>
-        <BrowserRouter>
+        <BrowserRouter basename={basename}>
           <App />
         </BrowserRouter>
       </StrictMode>,

@@ -55,8 +55,16 @@ async function issueNewToken(
   return res.json() as Promise<TokenResponse>;
 }
 
-export async function refreshLineAccessTokens(db: D1Database): Promise<void> {
-  const accounts = await getLineAccounts(db);
+/**
+ * `accounts` を渡すと D1 から読み直さずにそれを使う (cron の tick 内で
+ * getLineAccounts を重複実行しないため)。更新に成功した行は渡された
+ * オブジェクトも書き換えるので、呼び出し側は同じ配列を後続ジョブに使い回せる。
+ */
+export async function refreshLineAccessTokens(
+  db: D1Database,
+  accounts?: LineAccount[],
+): Promise<void> {
+  accounts ??= await getLineAccounts(db);
 
   for (const account of accounts) {
     if (!account.is_active) continue;
@@ -71,6 +79,8 @@ export async function refreshLineAccessTokens(db: D1Database): Promise<void> {
         channel_access_token: token.access_token,
         token_expires_at: expiresAtJst,
       });
+      account.channel_access_token = token.access_token;
+      account.token_expires_at = expiresAtJst;
 
       console.log(`🔄 Token refreshed: ${account.name} (expires ${expiresAtJst})`);
     } catch (err) {

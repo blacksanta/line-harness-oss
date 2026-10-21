@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
+import { LineClient as RealLineClient } from '@line-crm/line-sdk';
 import { monthStartJst } from './quota.js';
 
 const dbMocks = {
-  getBroadcasts: vi.fn(),
+  getScheduledBroadcasts: vi.fn(),
   getBroadcastById: vi.fn(),
   createBroadcast: vi.fn(),
   updateBroadcast: vi.fn(),
@@ -62,9 +63,10 @@ const lineClient = {} as LineClient;
 
 beforeEach(() => {
   for (const fn of Object.values(dbMocks)) fn.mockClear();
+  dbMocks.getLineAccountById.mockResolvedValue({ id: 'acc-1', channel_access_token: 'test-account-token', is_active: 1 });
   dbMocks.recoverStuckDeliveries.mockResolvedValue(0);
   dbMocks.getQueuedBroadcasts.mockResolvedValue([]);
-  dbMocks.getBroadcasts.mockResolvedValue([]);
+  dbMocks.getScheduledBroadcasts.mockResolvedValue([]);
   dbMocks.getFriendScenariosDueForDelivery.mockResolvedValue([]);
 });
 
@@ -340,7 +342,7 @@ describe("processBroadcastSend 'all' recipient recording", () => {
     const fr = executed.find((e) => e.sql.includes('FROM friends'))!;
     expect(fr.sql).toContain('is_following = 1');
     expect(dbMocks.updateBroadcastStatus).toHaveBeenCalledWith(
-      db, allRow.id, 'sent', { totalCount: 7, successCount: 7 },
+      db, allRow.id, 'sent', { totalCount: 7, successCount: 7, lastError: null },
     );
   });
 
@@ -369,7 +371,8 @@ describe("processBroadcastSend 'all' recipient recording", () => {
 
   test('scopes the follower count to the broadcast account when one is set', async () => {
     dbMocks.getBroadcastById.mockResolvedValue({ ...allRow, line_account_id: 'acc-1' });
-    dbMocks.getLineAccountById.mockResolvedValue(null);
+    vi.spyOn(RealLineClient.prototype, 'getMessageQuota').mockResolvedValue({ type: 'none' });
+    vi.spyOn(RealLineClient.prototype, 'broadcast').mockResolvedValue({ data: {}, requestId: 'req-2' });
     const client = { broadcast: vi.fn(async () => ({ requestId: 'req-2' })) };
     const { db, executed } = makeCountingDb(3);
 
@@ -381,7 +384,7 @@ describe("processBroadcastSend 'all' recipient recording", () => {
     expect(fr.sql).toContain('(line_account_id = ? OR line_account_id IS NULL)');
     expect(fr.params).toContain('acc-1');
     expect(dbMocks.updateBroadcastStatus).toHaveBeenCalledWith(
-      db, allRow.id, 'sent', { totalCount: 3, successCount: 3 },
+      db, allRow.id, 'sent', { totalCount: 3, successCount: 3, lastError: null },
     );
   });
 });
@@ -555,32 +558,28 @@ describe('send routes projected-audience guard', () => {
       { method: 'POST' },
     );
     expect(res.status).toBe(409);
-    // The queued executor's tag-marker WHERE has no is_following rule —
-    // unfollowed tagged rows are part of the send (and log) population, so
-    // the estimate must include them too.
+    // All tag paths now use the account's following members only.
     const accountCount = executed.find((s) => s.includes('line_account_id = ?') && s.includes('friend_tags'))!;
     expect(accountCount).toBeDefined();
-    expect(accountCount).not.toContain('is_following');
+    expect(accountCount).toContain('is_following');
   });
 
-  test('unscoped tag send above the queue threshold: judged by the tag-marker population (no is_following)', async () => {
+  test('unscoped tag send above the queue threshold: following audience exceeding quota is blocked', async () => {
     dbMocks.getBroadcastById.mockResolvedValue({
       ...draftRow, target_type: 'tag', target_tag_id: 'tag-1', line_account_id: null,
     });
     dbMocks.getFriendsByTag.mockResolvedValue(
       Array.from({ length: 600 }, (_, i) => ({ id: `f${i}`, line_user_id: `U${i}`, is_following: 1 })),
     );
-    // Following count 600 (> 500 → queued path). The tag marker's WHERE has
-    // no is_following rule, so the queued population may differ; the guard
-    // must use it (stubbed to 1 → 4999 + 1 <= 5000 passes; the lock stub then
-    // returns 0 changes → 409, proving that figure decided).
+    // The following count is 600, so 4999 + 600 exceeds the limit.
+    // The former membership-only marker count must no longer override it.
     const { db, executed } = makeTagDb({ monthly: 4999, unfilteredTag: 600, accountTag: 999, queuedUnscopedTag: 1 });
     const res = await setupApp(db, { QUOTA_MONTHLY_MESSAGES_MAX: '5000' }).request(
       `/api/broadcasts/${draftRow.id}/send`,
       { method: 'POST' },
     );
-    expect(res.status).toBe(409);
-    const queuedCount = executed.find((s) => s.includes('friend_tags') && !s.includes('is_following'))!;
+    expect(res.status).toBe(403);
+    const queuedCount = executed.find((s) => s.includes('friend_tags') && s.includes('is_following'))!;
     expect(queuedCount).toBeDefined();
     expect(queuedCount).not.toContain('line_account_id');
   });
@@ -602,7 +601,7 @@ describe('send routes projected-audience guard', () => {
     expect(body.error).toBe('quota_exceeded');
   });
 
-  test("account-bound 'tag': estimate mirrors the unfiltered send path (no account filter)", async () => {
+  test("account-bound 'tag': estimate filters by sending account", async () => {
     dbMocks.getBroadcastById.mockResolvedValue({
       ...draftRow, target_type: 'tag', target_tag_id: 'tag-1', line_account_id: 'acc-1',
     });
@@ -612,12 +611,10 @@ describe('send routes projected-audience guard', () => {
       { method: 'POST' },
     );
     expect(res.status).toBe(403);
-    // The actual tag send (getFriendsByTag) applies no account filter, so the
-    // estimate must not either — filtering would undercount and let a send
-    // slip past the limit.
+    // Preview, quota and delivery must all use the sending account.
     const est = executed.find((s) => s.includes('friend_tags'))!;
     expect(est).toBeDefined();
-    expect(est).not.toContain('line_account_id');
+    expect(est).toContain('line_account_id');
   });
 
   test('/send under the projected limit proceeds past the guard', async () => {
@@ -798,7 +795,7 @@ describe('processScheduledBroadcasts per-broadcast quota re-check', () => {
 
   test('crossing the limit after the first due send stops the rest of the tick', async () => {
     const rows = [scheduledRow('sched-1'), scheduledRow('sched-2')];
-    dbMocks.getBroadcasts.mockResolvedValue(rows);
+    dbMocks.getScheduledBroadcasts.mockResolvedValue(rows);
     dbMocks.getBroadcastById.mockImplementation(async (_db: unknown, id: string) =>
       rows.find((r) => r.id === id) ?? rows[0],
     );
@@ -820,7 +817,7 @@ describe('processScheduledBroadcasts per-broadcast quota re-check', () => {
 
   test('a due send whose estimate alone would cross the limit is never claimed', async () => {
     const rows = [scheduledRow('sched-big')];
-    dbMocks.getBroadcasts.mockResolvedValue(rows);
+    dbMocks.getScheduledBroadcasts.mockResolvedValue(rows);
     dbMocks.getBroadcastById.mockImplementation(async () => rows[0]);
     // 4999 used of 5000, audience estimate 500 → projected 5499 > 5000.
     const state = { monthly: 4999 };
@@ -882,7 +879,7 @@ describe('processScheduledBroadcasts per-broadcast quota re-check', () => {
   };
 
   test('due dedup whose projected total would cross the limit is never claimed', async () => {
-    dbMocks.getBroadcasts.mockResolvedValue([dedupScheduledRow]);
+    dbMocks.getScheduledBroadcasts.mockResolvedValue([dedupScheduledRow]);
     dbMocks.getBroadcastById.mockResolvedValue(dedupScheduledRow);
     dbMocks.getLineAccountById.mockResolvedValue({
       id: 'acc1', is_active: 1, channel_access_token: 'tok',
@@ -896,7 +893,7 @@ describe('processScheduledBroadcasts per-broadcast quota re-check', () => {
   });
 
   test('due dedup within the budget is claimed and queued as before', async () => {
-    dbMocks.getBroadcasts.mockResolvedValue([dedupScheduledRow]);
+    dbMocks.getScheduledBroadcasts.mockResolvedValue([dedupScheduledRow]);
     dbMocks.getBroadcastById.mockResolvedValue(dedupScheduledRow);
     dbMocks.getLineAccountById.mockResolvedValue({
       id: 'acc1', is_active: 1, channel_access_token: 'tok',
@@ -954,7 +951,7 @@ describe('processScheduledBroadcasts per-broadcast quota re-check', () => {
   }
 
   test('due personalized tag send: judged by its account-filtered audience, not the unfiltered tag count', async () => {
-    dbMocks.getBroadcasts.mockResolvedValue([personalizedScheduledRow]);
+    dbMocks.getScheduledBroadcasts.mockResolvedValue([personalizedScheduledRow]);
     dbMocks.getBroadcastById.mockResolvedValue(personalizedScheduledRow);
     // Other accounts share the tag (unfiltered 500 would project over), but
     // this account's personalized send goes to 1 friend: 4999 + 1 <= 5000.
@@ -966,7 +963,7 @@ describe('processScheduledBroadcasts per-broadcast quota re-check', () => {
   });
 
   test('due personalized tag send whose own audience would cross the limit is skipped', async () => {
-    dbMocks.getBroadcasts.mockResolvedValue([personalizedScheduledRow]);
+    dbMocks.getScheduledBroadcasts.mockResolvedValue([personalizedScheduledRow]);
     dbMocks.getBroadcastById.mockResolvedValue(personalizedScheduledRow);
     const { db, executed } = makePersonalizedScheduledDb({ monthly: 4999, personal: 2, unfilteredTag: 500 });
     await processScheduledBroadcasts(
@@ -977,7 +974,7 @@ describe('processScheduledBroadcasts per-broadcast quota re-check', () => {
 
   test('a due send that fits within the remaining budget still goes out', async () => {
     const rows = [scheduledRow('sched-fit')];
-    dbMocks.getBroadcasts.mockResolvedValue(rows);
+    dbMocks.getScheduledBroadcasts.mockResolvedValue(rows);
     dbMocks.getBroadcastById.mockImplementation(async () => rows[0]);
     const state = { monthly: 100 };
     const client = {
@@ -995,7 +992,7 @@ describe('processScheduledBroadcasts per-broadcast quota re-check', () => {
 
   test('no quotaEnv → every due broadcast sends as before', async () => {
     const rows = [scheduledRow('sched-1'), scheduledRow('sched-2')];
-    dbMocks.getBroadcasts.mockResolvedValue(rows);
+    dbMocks.getScheduledBroadcasts.mockResolvedValue(rows);
     dbMocks.getBroadcastById.mockImplementation(async (_db: unknown, id: string) =>
       rows.find((r) => r.id === id) ?? rows[0],
     );
@@ -1191,3 +1188,5 @@ describe('DELETE /api/broadcasts/:id usage-record guard', () => {
     expect(dbMocks.deleteBroadcast).toHaveBeenCalledTimes(1);
   });
 });
+
+afterEach(() => vi.restoreAllMocks());
