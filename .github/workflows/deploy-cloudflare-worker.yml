@@ -13,6 +13,12 @@ on:
       - 'packages/update-engine/**'
       - '.github/workflows/deploy-cloudflare-worker.yml'
 
+# 同じブランチへの連続 merge で D1 migration が並列に走り、同じファイルの
+# import を取り合って失敗した (2026-10-21, staging)。直列化して順番に流す。
+concurrency:
+  group: deploy-worker-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   deploy:
     if: github.repository != 'Shudesu/line-harness-oss' && vars.LINE_HARNESS_CLOUDFLARE_DEPLOY == 'true'
