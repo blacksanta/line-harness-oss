@@ -14,8 +14,11 @@ jobs:
     if: github.repository != 'Shudesu/line-harness-oss'
     runs-on: ubuntu-latest
     steps:
+      # 本家の更新は staging で実機確認してから main に上げる運用 (CLAUDE.md)。
+      # staging を起点に取り込みブランチを作り、PR も staging 宛てにする。
       - uses: actions/checkout@v4
         with:
+          ref: staging
           fetch-depth: 0
 
       - name: Configure git
@@ -61,7 +64,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh pr create \
-            --base main \
+            --base staging \
             --head "${{ steps.branch.outputs.name }}" \
             --title "chore: update from upstream" \
             --body "This PR imports the latest Shudesu/line-harness-oss main into this fork.\n\nMerge this PR to receive upstream fixes and features, then let the existing Cloudflare deploy workflows update your environment."
